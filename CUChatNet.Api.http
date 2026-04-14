@@ -1,0 +1,33 @@
+@baseUrl = https://localhost:7086
+
+### health
+GET {{baseUrl}}/api/health
+
+### send sms
+POST {{baseUrl}}/api/verify/send
+Content-Type: application/json
+
+{
+  "phone": "+50688887777"
+}
+
+### verify sms
+POST {{baseUrl}}/api/verify/check
+Content-Type: application/json
+
+{
+  "phone": "+50688887777",
+  "code": "123456"
+}
+
+### setup profile
+POST {{baseUrl}}/api/auth/profile-setup
+Content-Type: application/json
+
+{
+  "phone": "+50688887777",
+  "name": "Andrey",
+  "description": "Cuenta creada desde API",
+  "photoUrl": null,
+  "status": "available"
+}
