@@ -80,7 +80,8 @@ builder.Services.AddCors(options =>
         policy.WithOrigins(
             "http://localhost:3000",
             "https://localhost:3000",
-            "https://cuchatnet-frontend-euc3gea3gqa0afbx.eastus-01.azurewebsites.net"
+            "https://cuchatnet-frontend-euc3gea3gqa0afbx.eastus-01.azurewebsites.net",
+            "https://ccnet-frontend.onrender.com"
         )
         .AllowAnyHeader()
         .AllowAnyMethod() // Esto permite DELETE, PUT, POST, etc.
