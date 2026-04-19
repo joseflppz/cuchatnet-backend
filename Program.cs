@@ -139,10 +139,9 @@ app.UseSwaggerUI(c => {
     c.RoutePrefix = "swagger";
 });
 
-app.UseHttpsRedirection();
-
 // 9. CORS, AUTH Y RUTAS (El orden aquí es vital)
 app.UseCors("AllowFrontend");
+app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
 
