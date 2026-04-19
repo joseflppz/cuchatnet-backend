@@ -207,6 +207,7 @@ public class ChatsController : ControllerBase
             using var transaction = await _db.Database.BeginTransactionAsync();
             try
             {
+                // Actualizar información básica del grupo
                 chat.Nombre = !string.IsNullOrWhiteSpace(request.GroupName) ? request.GroupName.Trim() : chat.Nombre;
                 chat.Descripcion = request.GroupDescription ?? chat.Descripcion;
                 chat.FotoUrl = request.GroupPhoto ?? chat.FotoUrl;
@@ -217,6 +218,7 @@ public class ChatsController : ControllerBase
                 var currentMemberIds = chat.Participantes.Where(p => p.Activo).Select(p => p.UsuarioId).ToList();
                 var incomingMemberIds = request.MemberIds ?? new List<long>();
 
+                // ✅ AGREGAR NUEVOS MIEMBROS
                 var newMemberIds = incomingMemberIds.Where(id => !currentMemberIds.Contains(id)).ToList();
                 foreach (var newId in newMemberIds)
                 {
@@ -230,8 +232,23 @@ public class ChatsController : ControllerBase
                     });
                 }
 
+                // ✅ ELIMINAR MIEMBROS QUE YA NO ESTÁN (excepto el creador)
+                var removedMemberIds = currentMemberIds.Where(id => !incomingMemberIds.Contains(id)).ToList();
+                foreach (var removedId in removedMemberIds)
+                {
+                    // No permitir eliminar al creador del grupo
+                    if (removedId == chat.CreadoPorUsuarioId) continue;
+                    
+                    var participantToRemove = chat.Participantes.FirstOrDefault(p => p.UsuarioId == removedId && p.Activo);
+                    if (participantToRemove != null)
+                    {
+                        participantToRemove.Activo = false; // Borrado lógico
+                    }
+                }
+
+                // ✅ ACTUALIZAR ROLES DE ADMIN
                 var incomingAdminIds = request.AdminIds ?? new List<long>();
-                foreach (var participant in chat.Participantes)
+                foreach (var participant in chat.Participantes.Where(p => p.Activo))
                 {
                     if (incomingAdminIds.Contains(participant.UsuarioId))
                         participant.Rol = "admin";
@@ -315,6 +332,7 @@ public class ChatsController : ControllerBase
             }
         });
     }
+    
     [HttpGet("my-groups/{userId:long}")]
     public async Task<IActionResult> GetMyGroups(long userId)
     {
