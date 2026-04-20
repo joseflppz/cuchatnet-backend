@@ -182,7 +182,7 @@ public class AdminUsersController : ControllerBase
         
         if (user is null)
             return NotFound();
-
+    
         // Registrar en bitácora ANTES de eliminar
         _db.BitacoraEventos.Add(new BitacoraEvento
         {
@@ -194,7 +194,7 @@ public class AdminUsersController : ControllerBase
             FechaEvento = DateTime.UtcNow,
             DireccionIp = HttpContext.Connection.RemoteIpAddress?.ToString()
         });
-
+    
         // Eliminar CuentaAcceso si existe
         if (user.CuentaAcceso is not null)
             _db.CuentasAcceso.Remove(user.CuentaAcceso);
@@ -209,20 +209,11 @@ public class AdminUsersController : ControllerBase
             .ToListAsync();
         if (chatParticipantes.Any())
             _db.ChatParticipantes.RemoveRange(chatParticipantes);
-        
-        // Marcar mensajes enviados por este usuario como eliminados
-        var mensajes = await _db.Mensajes
-            .Where(m => m.RemitenteUsuarioId == userId)
-            .ToListAsync();
-        foreach (var mensaje in mensajes)
-        {
-            mensaje.Eliminado = true;
-        }
-
+    
         // Eliminar usuario físicamente
+        // Los mensajes se manejarán por CASCADE DELETE o quedarán huérfanos
         _db.Usuarios.Remove(user);
-
+    
         await _db.SaveChangesAsync();
         return Ok(new { success = true });
     }
-}
