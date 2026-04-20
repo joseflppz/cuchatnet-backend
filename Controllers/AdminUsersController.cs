@@ -176,23 +176,45 @@ public class AdminUsersController : ControllerBase
     public async Task<IActionResult> DeleteUser(long userId)
     {
         var user = await _db.Usuarios
-            .FirstOrDefaultAsync(u => u.UsuarioId == userId && !u.Eliminado);
+            .Include(u => u.CuentaAcceso)
+            .Include(u => u.UsuarioRoles)
+            .Include(u => u.Mensajes)
+            .Include(u => u.ChatUsuarios)
+            .FirstOrDefaultAsync(u => u.UsuarioId == userId);
+        
         if (user is null)
             return NotFound();
 
-        user.Eliminado = true;
-        user.Activo = false;
-
+        // Registrar en bitácora ANTES de eliminar
         _db.BitacoraEventos.Add(new BitacoraEvento
         {
             Categoria = "admin",
             UsuarioId = userId,
-            Accion = "Usuario eliminado lógicamente",
+            Accion = "Usuario eliminado permanentemente",
             Detalles = user.Nombre,
-            Severidad = "warning",
+            Severidad = "critical",
             FechaEvento = DateTime.UtcNow,
             DireccionIp = HttpContext.Connection.RemoteIpAddress?.ToString()
         });
+
+        // Eliminar relaciones dependientes primero
+        if (user.CuentaAcceso is not null)
+            _db.CuentasAcceso.Remove(user.CuentaAcceso);
+        
+        if (user.UsuarioRoles.Any())
+            _db.UsuarioRoles.RemoveRange(user.UsuarioRoles);
+        
+        if (user.ChatUsuarios.Any())
+            _db.ChatUsuarios.RemoveRange(user.ChatUsuarios);
+        
+        // Marcar mensajes como eliminados (no borrar para mantener integridad del chat)
+        foreach (var mensaje in user.Mensajes)
+        {
+            mensaje.Eliminado = true;
+        }
+
+        // Eliminar usuario
+        _db.Usuarios.Remove(user);
 
         await _db.SaveChangesAsync();
         return Ok(new { success = true });
