@@ -260,6 +260,13 @@ public class AdminUsersController : ControllerBase
         if (chatParticipantes.Any())
             _db.ChatParticipantes.RemoveRange(chatParticipantes);
     
+        // 11.5. Eliminar Mensajes enviados por el usuario
+        var mensajes = await _db.Mensajes
+            .Where(m => m.RemitenteUsuarioId == userId)
+            .ToListAsync();
+        if (mensajes.Any())
+            _db.Mensajes.RemoveRange(mensajes);
+    
         // 12. Eliminar usuario físicamente
         _db.Usuarios.Remove(user);
     
