@@ -178,8 +178,6 @@ public class AdminUsersController : ControllerBase
         var user = await _db.Usuarios
             .Include(u => u.CuentaAcceso)
             .Include(u => u.UsuarioRoles)
-            .Include(u => u.Mensajes)
-            .Include(u => u.ChatUsuarios)
             .FirstOrDefaultAsync(u => u.UsuarioId == userId);
         
         if (user is null)
@@ -197,18 +195,26 @@ public class AdminUsersController : ControllerBase
             DireccionIp = HttpContext.Connection.RemoteIpAddress?.ToString()
         });
 
-        // Eliminar relaciones dependientes primero
+        // Eliminar CuentaAcceso si existe
         if (user.CuentaAcceso is not null)
             _db.CuentasAcceso.Remove(user.CuentaAcceso);
         
+        // Eliminar UsuarioRoles
         if (user.UsuarioRoles.Any())
             _db.UsuarioRoles.RemoveRange(user.UsuarioRoles);
         
-        if (user.ChatUsuarios.Any())
-            _db.ChatUsuarios.RemoveRange(user.ChatUsuarios);
+        // Eliminar relaciones con chats (buscar directamente en BD)
+        var chatUsuarios = await _db.Set<ChatUsuario>()
+            .Where(cu => cu.UsuarioId == userId)
+            .ToListAsync();
+        if (chatUsuarios.Any())
+            _db.Set<ChatUsuario>().RemoveRange(chatUsuarios);
         
-        // Marcar mensajes como eliminados (no borrar para mantener integridad del chat)
-        foreach (var mensaje in user.Mensajes)
+        // Marcar mensajes como eliminados (buscar directamente en BD)
+        var mensajes = await _db.Mensajes
+            .Where(m => m.UsuarioId == userId)
+            .ToListAsync();
+        foreach (var mensaje in mensajes)
         {
             mensaje.Eliminado = true;
         }
