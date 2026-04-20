@@ -341,16 +341,16 @@ public class AuthController : ControllerBase
 
             await _db.SaveChangesAsync();
 
-            _db.BitacoraEventos.Add(new BitacoraEvento
-            {
-                Categoria = "system",
-                UsuarioId = user.UsuarioId,
-                Accion = "Perfil configurado",
-                Detalles = $"Usuario: {request.Name} - Correo: {email}",
-                Severidad = "info",
-                DireccionIp = HttpContext.Connection.RemoteIpAddress?.ToString(),
-                FechaEvento = DateTime.UtcNow,
-            });
+            //_db.BitacoraEventos.Add(new BitacoraEvento
+            //{
+                //Categoria = "system",
+                //UsuarioId = user.UsuarioId,
+                //Accion = "Perfil configurado",
+                //Detalles = $"Usuario: {request.Name} - Correo: {email}",
+                //Severidad = "info",
+                //DireccionIp = HttpContext.Connection.RemoteIpAddress?.ToString(),
+                //FechaEvento = DateTime.UtcNow,
+            //});
 
             await _db.SaveChangesAsync();
 
