@@ -341,18 +341,18 @@ public class AuthController : ControllerBase
 
             await _db.SaveChangesAsync();
 
-            // COMENTADO PARA EVITAR TIMEOUT DE BD
-            // _db.BitacoraEventos.Add(new BitacoraEvento
-            // {
-            //     Categoria = "system",
-            //     UsuarioId = user.UsuarioId,
-            //     Accion = "Perfil configurado",
-            //     Detalles = $"Usuario: {request.Name} - Correo: {email}",
-            //     Severidad = "info",
-            //     DireccionIp = HttpContext.Connection.RemoteIpAddress?.ToString(),
-            //     FechaEvento = DateTime.UtcNow,
-            // });
-            // await _db.SaveChangesAsync();
+             
+             _db.BitacoraEventos.Add(new BitacoraEvento
+             {
+                 Categoria = "system",
+                 UsuarioId = user.UsuarioId,
+                 Accion = "Perfil configurado",
+                 Detalles = $"Usuario: {request.Name} - Correo: {email}",
+                 Severidad = "info",
+                 DireccionIp = HttpContext.Connection.RemoteIpAddress?.ToString(),
+                 FechaEvento = DateTime.UtcNow,
+             });
+             await _db.SaveChangesAsync();
 
             user = await _db.Usuarios
                 .Include(u => u.UsuarioRoles)
@@ -428,10 +428,10 @@ public class AuthController : ControllerBase
             if (!passwordOk)
                 return Unauthorized(new { error = "Credenciales inválidas." });
 
-            // COMENTADO PARA EVITAR TIMEOUT DE BD
-            // user.FechaUltimoAcceso = DateTime.UtcNow;
-            // user.CuentaAcceso.UltimoLogin = DateTime.UtcNow;
-            // await _db.SaveChangesAsync();
+          
+             user.FechaUltimoAcceso = DateTime.UtcNow;
+             user.CuentaAcceso.UltimoLogin = DateTime.UtcNow;
+             await _db.SaveChangesAsync();
 
             var jwtKey = _configuration["Jwt:Key"]!;
             var jwtIssuer = _configuration["Jwt:Issuer"]!;
