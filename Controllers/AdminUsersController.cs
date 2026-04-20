@@ -183,35 +183,29 @@ public class AdminUsersController : ControllerBase
         if (user is null)
             return NotFound();
     
-        // Registrar en bitácora ANTES de eliminar
-        _db.BitacoraEventos.Add(new BitacoraEvento
-        {
-            Categoria = "admin",
-            UsuarioId = userId,
-            Accion = "Usuario eliminado permanentemente",
-            Detalles = user.Nombre,
-            Severidad = "critical",
-            FechaEvento = DateTime.UtcNow,
-            DireccionIp = HttpContext.Connection.RemoteIpAddress?.ToString()
-        });
+        // 1. Eliminar eventos de bitácora del usuario PRIMERO
+        var eventos = await _db.BitacoraEventos
+            .Where(e => e.UsuarioId == userId)
+            .ToListAsync();
+        if (eventos.Any())
+            _db.BitacoraEventos.RemoveRange(eventos);
     
-        // Eliminar CuentaAcceso si existe
+        // 2. Eliminar CuentaAcceso si existe
         if (user.CuentaAcceso is not null)
             _db.CuentasAcceso.Remove(user.CuentaAcceso);
         
-        // Eliminar UsuarioRoles
+        // 3. Eliminar UsuarioRoles
         if (user.UsuarioRoles.Any())
             _db.UsuarioRoles.RemoveRange(user.UsuarioRoles);
         
-        // Eliminar relaciones con chats (ChatParticipantes)
+        // 4. Eliminar relaciones con chats (ChatParticipantes)
         var chatParticipantes = await _db.ChatParticipantes
             .Where(cp => cp.UsuarioId == userId)
             .ToListAsync();
         if (chatParticipantes.Any())
             _db.ChatParticipantes.RemoveRange(chatParticipantes);
     
-        // Eliminar usuario físicamente
-        // Los mensajes se manejarán por CASCADE DELETE o quedarán huérfanos
+        // 5. Eliminar usuario físicamente
         _db.Usuarios.Remove(user);
     
         await _db.SaveChangesAsync();
