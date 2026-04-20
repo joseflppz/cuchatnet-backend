@@ -203,23 +203,23 @@ public class AdminUsersController : ControllerBase
         if (user.UsuarioRoles.Any())
             _db.UsuarioRoles.RemoveRange(user.UsuarioRoles);
         
-        // Eliminar relaciones con chats (buscar directamente en BD)
-        var chatUsuarios = await _db.Set<ChatUsuario>()
-            .Where(cu => cu.UsuarioId == userId)
+        // Eliminar relaciones con chats (ChatParticipantes)
+        var chatParticipantes = await _db.ChatParticipantes
+            .Where(cp => cp.UsuarioId == userId)
             .ToListAsync();
-        if (chatUsuarios.Any())
-            _db.Set<ChatUsuario>().RemoveRange(chatUsuarios);
+        if (chatParticipantes.Any())
+            _db.ChatParticipantes.RemoveRange(chatParticipantes);
         
-        // Marcar mensajes como eliminados (buscar directamente en BD)
+        // Marcar mensajes enviados por este usuario como eliminados
         var mensajes = await _db.Mensajes
-            .Where(m => m.UsuarioId == userId)
+            .Where(m => m.RemitenteUsuarioId == userId)
             .ToListAsync();
         foreach (var mensaje in mensajes)
         {
             mensaje.Eliminado = true;
         }
 
-        // Eliminar usuario
+        // Eliminar usuario físicamente
         _db.Usuarios.Remove(user);
 
         await _db.SaveChangesAsync();
