@@ -1,7 +1,7 @@
 using CUChatNet.Api.Data;
 using CUChatNet.Api.Dtos;
 using CUChatNet.Api.Models;
-using CUChatNet.Api.Services; // Asegúrate de que el namespace coincida
+using CUChatNet.Api.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.SignalR;
@@ -67,8 +67,6 @@ public class MessagesController : ControllerBase
 
         return Ok(result);
     }
-
-    // ... (mismo encabezado que ya tienes)
 
     [HttpPost("chats/{chatId:long}/messages")]
     public async Task<IActionResult> SendMessage(long chatId, [FromBody] SendMessageRequest request)
@@ -177,4 +175,116 @@ public class MessagesController : ControllerBase
 
         return Ok(new { success = true, count = unreadStates.Count });
     }
+
+    // ✅ Marcar mensaje como entregado
+    [HttpPost("messages/{messageId}/delivered")]
+    public async Task<IActionResult> MarkAsDelivered(long messageId, [FromBody] MarkMessageRequest request)
+    {
+        try
+        {
+            var mensaje = await _db.Mensajes
+                .Include(m => m.Estados)
+                .FirstOrDefaultAsync(m => m.MensajeId == messageId);
+
+            if (mensaje == null)
+                return NotFound(new { error = "Mensaje no encontrado" });
+
+            // Buscar o crear el estado para este usuario
+            var estado = mensaje.Estados.FirstOrDefault(e => e.UsuarioId == request.UserId);
+            
+            if (estado == null)
+            {
+                estado = new MensajeEstado
+                {
+                    MensajeId = messageId,
+                    UsuarioId = request.UserId,
+                    Estado = "delivered",
+                    FechaEntrega = DateTime.UtcNow
+                };
+                _db.MensajeEstados.Add(estado);
+            }
+            else if (estado.Estado == "sent")
+            {
+                estado.Estado = "delivered";
+                estado.FechaEntrega = DateTime.UtcNow;
+            }
+
+            await _db.SaveChangesAsync();
+
+            // Notificar vía SignalR al remitente
+            await _hubContext.Clients.User(mensaje.RemitenteUsuarioId.ToString())
+                .SendAsync("MessageDelivered", new
+                {
+                    messageId,
+                    userId = request.UserId,
+                    timestamp = DateTime.UtcNow
+                });
+
+            return Ok(new { message = "Mensaje marcado como entregado" });
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    // ✅ Marcar mensaje como leído
+    [HttpPost("messages/{messageId}/read")]
+    public async Task<IActionResult> MarkAsRead(long messageId, [FromBody] MarkMessageRequest request)
+    {
+        try
+        {
+            var mensaje = await _db.Mensajes
+                .Include(m => m.Estados)
+                .FirstOrDefaultAsync(m => m.MensajeId == messageId);
+
+            if (mensaje == null)
+                return NotFound(new { error = "Mensaje no encontrado" });
+
+            // Buscar o crear el estado para este usuario
+            var estado = mensaje.Estados.FirstOrDefault(e => e.UsuarioId == request.UserId);
+            
+            if (estado == null)
+            {
+                estado = new MensajeEstado
+                {
+                    MensajeId = messageId,
+                    UsuarioId = request.UserId,
+                    Estado = "read",
+                    FechaEntrega = DateTime.UtcNow,
+                    FechaVista = DateTime.UtcNow
+                };
+                _db.MensajeEstados.Add(estado);
+            }
+            else
+            {
+                estado.Estado = "read";
+                estado.FechaVista = DateTime.UtcNow;
+                if (estado.FechaEntrega == null)
+                    estado.FechaEntrega = DateTime.UtcNow;
+            }
+
+            await _db.SaveChangesAsync();
+
+            // Notificar vía SignalR al remitente
+            await _hubContext.Clients.User(mensaje.RemitenteUsuarioId.ToString())
+                .SendAsync("MessageRead", new
+                {
+                    messageId,
+                    userId = request.UserId,
+                    timestamp = DateTime.UtcNow
+                });
+
+            return Ok(new { message = "Mensaje marcado como leído" });
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+}
+
+public class MarkMessageRequest
+{
+    public long UserId { get; set; }
 }
