@@ -73,20 +73,14 @@ builder.Services.AddDbContext<CUChatNetDbContext>(options =>
 );
 
 // 5. CONFIGURAR CORS (Actualizado para permitir todos los métodos de eliminación)
+// 5. CONFIGURAR CORS
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>
     {
-        policy.WithOrigins(
-            "http://localhost:3000",
-            "https://localhost:3000",
-            "https://cuchatnet-frontend-euc3gea3gqa0afbx.eastus-01.azurewebsites.net",
-            "https://ccnet-frontend.onrender.com"
-            
-        )
+        policy.AllowAnyOrigin()
         .AllowAnyHeader()
-        .AllowAnyMethod() // Esto permite DELETE, PUT, POST, etc.
-        .AllowCredentials();
+        .AllowAnyMethod();
     });
 });
 
