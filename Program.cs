@@ -1,4 +1,4 @@
-﻿using CUChatNet.Api;
+using CUChatNet.Api;
 using CUChatNet.Api.Data;
 using CUChatNet.Api.Services;
 using CUChatNet.Api.Servicios;
@@ -12,7 +12,7 @@ using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// 1. CONFIGURACIÓN DE CONTROLADORES Y JSON (Agregado para compatibilidad con React)
+// 1. CONTROLADORES Y JSON
 builder.Services.AddControllers()
     .AddJsonOptions(options =>
     {
@@ -24,14 +24,15 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddScoped<ICorreoRecuperacionAdminServicio, CorreoRecuperacionAdminServicio>();
 builder.Services.AddScoped<IContactosServicio, ContactosServicio>();
 
-// 2. AGREGAR SIGNALR PARA CHAT EN VIVO
+// 2. SIGNALR
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<EncryptionService>();
 
-// 3. CONFIGURACIÓN DE SWAGGER
+// 3. SWAGGER
 builder.Services.AddSwaggerGen(c =>
 {
     c.SwaggerDoc("v1", new OpenApiInfo { Title = "CUChatNet API", Version = "v1" });
+
     c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
         Name = "Authorization",
@@ -41,6 +42,7 @@ builder.Services.AddSwaggerGen(c =>
         In = ParameterLocation.Header,
         Description = "Ingresa el token JWT"
     });
+
     c.AddSecurityRequirement(new OpenApiSecurityRequirement
     {
         {
@@ -53,7 +55,7 @@ builder.Services.AddSwaggerGen(c =>
     });
 });
 
-// 4. CONEXIÓN A BASE DE DATOS (PLESK CUC)
+// 4. BASE DE DATOS
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
 
 if (string.IsNullOrEmpty(connectionString) || connectionString.Contains("SQLEXPRESS") || connectionString.Contains("LocalDB"))
@@ -72,19 +74,18 @@ builder.Services.AddDbContext<CUChatNetDbContext>(options =>
     })
 );
 
-// 5. CONFIGURAR CORS (Actualizado para permitir todos los métodos de eliminación)
-// 5. CONFIGURAR CORS
+// 5. CORS
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>
     {
         policy.AllowAnyOrigin()
-        .AllowAnyHeader()
-        .AllowAnyMethod();
+              .AllowAnyHeader()
+              .AllowAnyMethod();
     });
 });
 
-// 6. AUTENTICACIÓN JWT
+// 6. JWT
 var jwtKey = builder.Configuration["Jwt:Key"] ?? "ClaveSuperSecretaDePrueba1234567890";
 var jwtIssuer = builder.Configuration["Jwt:Issuer"] ?? "CUChatNet";
 var jwtAudience = builder.Configuration["Jwt:Audience"] ?? "CUChatNetUsers";
@@ -112,9 +113,25 @@ builder.Services.AddAuthorization(options =>
 
 var app = builder.Build();
 
-// --- MIDDLEWARE PIPELINE ---
 
-// 7. ARCHIVOS ESTÁTICOS Y UPLOADS
+// ================= PIPELINE =================
+
+// ✅ MANEJO GLOBAL DE ERRORES
+app.UseExceptionHandler(errorApp =>
+{
+    errorApp.Run(async context =>
+    {
+        context.Response.StatusCode = 500;
+        context.Response.ContentType = "application/json";
+
+        await context.Response.WriteAsync("{\"error\":\"Error interno del servidor\"}");
+    });
+});
+
+// 1. HTTPS
+app.UseHttpsRedirection();
+
+// 2. ARCHIVOS ESTÁTICOS
 app.UseStaticFiles();
 
 var uploadsPath = Path.Combine(Directory.GetCurrentDirectory(), "Uploads");
@@ -126,19 +143,40 @@ app.UseStaticFiles(new StaticFileOptions
     RequestPath = "/uploads"
 });
 
-// 8. SWAGGER
+// 3. SWAGGER
 app.UseSwagger();
-app.UseSwaggerUI(c => {
+app.UseSwaggerUI(c =>
+{
     c.SwaggerEndpoint("/swagger/v1/swagger.json", "CUChatNet API v1");
     c.RoutePrefix = "swagger";
 });
 
-// 9. CORS, AUTH Y RUTAS (El orden aquí es vital)
+// 4. ROUTING
+app.UseRouting();
+
+// 5. MANEJO DE PREFLIGHT REQUESTS (OPTIONS)
+app.Use(async (context, next) =>
+{
+    if (context.Request.Method == "OPTIONS")
+    {
+        context.Response.Headers.Add("Access-Control-Allow-Origin", "*");
+        context.Response.Headers.Add("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+        context.Response.Headers.Add("Access-Control-Allow-Headers", "*");
+        context.Response.StatusCode = 200;
+        await context.Response.CompleteAsync();
+        return;
+    }
+    await next();
+});
+
+// 6. CORS
 app.UseCors("AllowFrontend");
-app.UseHttpsRedirection();
+
+// 7. AUTHENTICATION Y AUTHORIZATION
 app.UseAuthentication();
 app.UseAuthorization();
 
+// 8. ENDPOINTS
 app.MapControllers();
 app.MapHub<ChatHub>("/chathub");
 
