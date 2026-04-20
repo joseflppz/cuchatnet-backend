@@ -183,29 +183,42 @@ public class AdminUsersController : ControllerBase
         if (user is null)
             return NotFound();
     
-        // 1. Eliminar eventos de bitácora del usuario PRIMERO
+        // 1. Eliminar eventos de bitácora
         var eventos = await _db.BitacoraEventos
             .Where(e => e.UsuarioId == userId)
             .ToListAsync();
         if (eventos.Any())
             _db.BitacoraEventos.RemoveRange(eventos);
     
-        // 2. Eliminar CuentaAcceso si existe
+        // 2. Eliminar contactos (tanto como usuario como contacto)
+        var contactosComoUsuario = await _db.ContactosUsuario
+            .Where(c => c.UsuarioId == userId)
+            .ToListAsync();
+        if (contactosComoUsuario.Any())
+            _db.ContactosUsuario.RemoveRange(contactosComoUsuario);
+    
+        var contactosComoContacto = await _db.ContactosUsuario
+            .Where(c => c.ContactoUsuarioId == userId)
+            .ToListAsync();
+        if (contactosComoContacto.Any())
+            _db.ContactosUsuario.RemoveRange(contactosComoContacto);
+    
+        // 3. Eliminar CuentaAcceso
         if (user.CuentaAcceso is not null)
             _db.CuentasAcceso.Remove(user.CuentaAcceso);
         
-        // 3. Eliminar UsuarioRoles
+        // 4. Eliminar UsuarioRoles
         if (user.UsuarioRoles.Any())
             _db.UsuarioRoles.RemoveRange(user.UsuarioRoles);
         
-        // 4. Eliminar relaciones con chats (ChatParticipantes)
+        // 5. Eliminar ChatParticipantes
         var chatParticipantes = await _db.ChatParticipantes
             .Where(cp => cp.UsuarioId == userId)
             .ToListAsync();
         if (chatParticipantes.Any())
             _db.ChatParticipantes.RemoveRange(chatParticipantes);
     
-        // 5. Eliminar usuario físicamente
+        // 6. Eliminar usuario físicamente
         _db.Usuarios.Remove(user);
     
         await _db.SaveChangesAsync();
