@@ -183,14 +183,42 @@ public class AdminUsersController : ControllerBase
         if (user is null)
             return NotFound();
     
-        // 1. Eliminar eventos de bitácora
+        // 1. Eliminar MensajeEstados
+        var mensajeEstados = await _db.MensajeEstados
+            .Where(me => me.UsuarioId == userId)
+            .ToListAsync();
+        if (mensajeEstados.Any())
+            _db.MensajeEstados.RemoveRange(mensajeEstados);
+    
+        // 2. Eliminar EstadoVisualizaciones
+        var estadoVisualizaciones = await _db.EstadoVisualizaciones
+            .Where(ev => ev.UsuarioId == userId)
+            .ToListAsync();
+        if (estadoVisualizaciones.Any())
+            _db.EstadoVisualizaciones.RemoveRange(estadoVisualizaciones);
+    
+        // 3. Eliminar EstadosUsuario
+        var estadosUsuario = await _db.EstadosUsuario
+            .Where(eu => eu.UsuarioId == userId)
+            .ToListAsync();
+        if (estadosUsuario.Any())
+            _db.EstadosUsuario.RemoveRange(estadosUsuario);
+    
+        // 4. Eliminar ContactosSilenciadosEstado
+        var contactosSilenciados = await _db.ContactosSilenciadosEstado
+            .Where(cs => cs.UsuarioId == userId || cs.ContactoUsuarioId == userId)
+            .ToListAsync();
+        if (contactosSilenciados.Any())
+            _db.ContactosSilenciadosEstado.RemoveRange(contactosSilenciados);
+    
+        // 5. Eliminar eventos de bitácora
         var eventos = await _db.BitacoraEventos
             .Where(e => e.UsuarioId == userId)
             .ToListAsync();
         if (eventos.Any())
             _db.BitacoraEventos.RemoveRange(eventos);
     
-        // 2. Eliminar contactos (tanto como usuario como contacto)
+        // 6. Eliminar contactos (tanto como usuario como contacto)
         var contactosComoUsuario = await _db.ContactosUsuario
             .Where(c => c.UsuarioId == userId)
             .ToListAsync();
@@ -203,22 +231,36 @@ public class AdminUsersController : ControllerBase
         if (contactosComoContacto.Any())
             _db.ContactosUsuario.RemoveRange(contactosComoContacto);
     
-        // 3. Eliminar CuentaAcceso
+        // 7. Eliminar DispositivosUsuario
+        var dispositivos = await _db.DispositivosUsuario
+            .Where(d => d.UsuarioId == userId)
+            .ToListAsync();
+        if (dispositivos.Any())
+            _db.DispositivosUsuario.RemoveRange(dispositivos);
+    
+        // 8. Eliminar PreferenciasUsuario
+        var preferencias = await _db.PreferenciasUsuario
+            .Where(p => p.UsuarioId == userId)
+            .ToListAsync();
+        if (preferencias.Any())
+            _db.PreferenciasUsuario.RemoveRange(preferencias);
+    
+        // 9. Eliminar CuentaAcceso
         if (user.CuentaAcceso is not null)
             _db.CuentasAcceso.Remove(user.CuentaAcceso);
         
-        // 4. Eliminar UsuarioRoles
+        // 10. Eliminar UsuarioRoles
         if (user.UsuarioRoles.Any())
             _db.UsuarioRoles.RemoveRange(user.UsuarioRoles);
         
-        // 5. Eliminar ChatParticipantes
+        // 11. Eliminar ChatParticipantes
         var chatParticipantes = await _db.ChatParticipantes
             .Where(cp => cp.UsuarioId == userId)
             .ToListAsync();
         if (chatParticipantes.Any())
             _db.ChatParticipantes.RemoveRange(chatParticipantes);
     
-        // 6. Eliminar usuario físicamente
+        // 12. Eliminar usuario físicamente
         _db.Usuarios.Remove(user);
     
         await _db.SaveChangesAsync();
