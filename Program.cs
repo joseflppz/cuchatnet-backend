@@ -74,14 +74,19 @@ builder.Services.AddDbContext<CUChatNetDbContext>(options =>
     })
 );
 
-// 5. CORS
+// 5. CORS - ✅ CORREGIDO PARA SIGNALR
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>
     {
-        policy.AllowAnyOrigin()
-              .AllowAnyHeader()
-              .AllowAnyMethod();
+        policy.WithOrigins(
+            "http://localhost:3000",
+            "https://localhost:3000",
+            "https://ccnet-frontend.onrender.com"
+        )
+        .AllowAnyHeader()
+        .AllowAnyMethod()
+        .AllowCredentials();  // ← CRÍTICO para SignalR
     });
 });
 
@@ -113,7 +118,6 @@ builder.Services.AddAuthorization(options =>
 
 var app = builder.Build();
 
-
 // ================= PIPELINE =================
 
 // ✅ MANEJO GLOBAL DE ERRORES
@@ -123,7 +127,6 @@ app.UseExceptionHandler(errorApp =>
     {
         context.Response.StatusCode = 500;
         context.Response.ContentType = "application/json";
-
         await context.Response.WriteAsync("{\"error\":\"Error interno del servidor\"}");
     });
 });
@@ -154,29 +157,14 @@ app.UseSwaggerUI(c =>
 // 4. ROUTING
 app.UseRouting();
 
-// 5. MANEJO DE PREFLIGHT REQUESTS (OPTIONS)
-app.Use(async (context, next) =>
-{
-    if (context.Request.Method == "OPTIONS")
-    {
-        context.Response.Headers.Add("Access-Control-Allow-Origin", "*");
-        context.Response.Headers.Add("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-        context.Response.Headers.Add("Access-Control-Allow-Headers", "*");
-        context.Response.StatusCode = 200;
-        await context.Response.CompleteAsync();
-        return;
-    }
-    await next();
-});
-
-// 6. CORS
+// 5. CORS - ✅ DEBE IR ANTES DE AUTHENTICATION
 app.UseCors("AllowFrontend");
 
-// 7. AUTHENTICATION Y AUTHORIZATION
+// 6. AUTHENTICATION Y AUTHORIZATION
 app.UseAuthentication();
 app.UseAuthorization();
 
-// 8. ENDPOINTS
+// 7. ENDPOINTS
 app.MapControllers();
 app.MapHub<ChatHub>("/chathub");
 
