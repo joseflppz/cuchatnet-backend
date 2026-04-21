@@ -145,7 +145,7 @@ public class MessagesController : ControllerBase
         if (message == null) return NotFound();
 
         message.EliminadoParaTodos = true;
-        message.Contenido = "Este mensaje fue eliminado"; // No necesita cifrado al estar eliminado
+        message.Contenido = "Este mensaje fue eliminado";
         message.Encriptado = false;
 
         await _db.SaveChangesAsync();
@@ -188,14 +188,11 @@ public class MessagesController : ControllerBase
 
         await _db.SaveChangesAsync();
 
-        // Notificamos al grupo que alguien leyó los mensajes. 
-        // Esto hace que al otro usuario se le pongan los checks en azul.
         await _hubContext.Clients.Group(chatId.ToString()).SendAsync("ChatReadByPeer", userId);
 
         return Ok(new { success = true, count = unreadStates.Count });
     }
 
-    // ✅ Marcar mensaje como entregado
     [HttpPost("messages/{messageId}/delivered")]
     public async Task<IActionResult> MarkAsDelivered(long messageId, [FromBody] MarkMessageRequest request)
     {
@@ -208,7 +205,6 @@ public class MessagesController : ControllerBase
             if (mensaje == null)
                 return NotFound(new { error = "Mensaje no encontrado" });
 
-            // Buscar o crear el estado para este usuario
             var estado = mensaje.Estados.FirstOrDefault(e => e.UsuarioId == request.UserId);
             
             if (estado == null)
@@ -230,7 +226,6 @@ public class MessagesController : ControllerBase
 
             await _db.SaveChangesAsync();
 
-            // Notificar vía SignalR al remitente
             await _hubContext.Clients.User(mensaje.RemitenteUsuarioId.ToString())
                 .SendAsync("MessageDelivered", new
                 {
@@ -239,15 +234,14 @@ public class MessagesController : ControllerBase
                     timestamp = DateTime.UtcNow
                 });
 
-            return Ok(new { message = "Mensaje marcado como entregado" });
+            return Ok(new { success = true });
         }
         catch (Exception ex)
         {
-            return StatusCode(500, new { error = ex.Message });
+            return StatusCode(500, new { error = ex.Message, details = ex.InnerException?.Message });
         }
     }
 
-    // ✅ Marcar mensaje como leído
     [HttpPost("messages/{messageId}/read")]
     public async Task<IActionResult> MarkAsRead(long messageId, [FromBody] MarkMessageRequest request)
     {
@@ -260,7 +254,6 @@ public class MessagesController : ControllerBase
             if (mensaje == null)
                 return NotFound(new { error = "Mensaje no encontrado" });
 
-            // Buscar o crear el estado para este usuario
             var estado = mensaje.Estados.FirstOrDefault(e => e.UsuarioId == request.UserId);
             
             if (estado == null)
@@ -269,7 +262,7 @@ public class MessagesController : ControllerBase
                 {
                     MensajeId = messageId,
                     UsuarioId = request.UserId,
-                    Estado = "read",
+                    Estado = "seen",
                     FechaEntrega = DateTime.UtcNow,
                     FechaVista = DateTime.UtcNow
                 };
@@ -277,7 +270,7 @@ public class MessagesController : ControllerBase
             }
             else
             {
-                estado.Estado = "read";
+                estado.Estado = "seen";
                 estado.FechaVista = DateTime.UtcNow;
                 if (estado.FechaEntrega == null)
                     estado.FechaEntrega = DateTime.UtcNow;
@@ -285,7 +278,6 @@ public class MessagesController : ControllerBase
 
             await _db.SaveChangesAsync();
 
-            // Notificar vía SignalR al remitente
             await _hubContext.Clients.User(mensaje.RemitenteUsuarioId.ToString())
                 .SendAsync("MessageRead", new
                 {
@@ -294,11 +286,11 @@ public class MessagesController : ControllerBase
                     timestamp = DateTime.UtcNow
                 });
 
-            return Ok(new { message = "Mensaje marcado como leído" });
+            return Ok(new { success = true });
         }
         catch (Exception ex)
         {
-            return StatusCode(500, new { error = ex.Message });
+            return StatusCode(500, new { error = ex.Message, details = ex.InnerException?.Message });
         }
     }
 }
