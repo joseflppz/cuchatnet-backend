@@ -23,36 +23,44 @@ public class ChatsController : ControllerBase
     [HttpGet("user/{userId:long}")]
     public async Task<ActionResult<IEnumerable<ChatListItemDto>>> GetChats(long userId)
     {
-        // 1. Obtener las membresías del usuario (Sin Includes profundos para evitar ciclos)
+        // ✅ OPTIMIZACIÓN 1: AsSplitQuery + cargar solo campos necesarios
         var memberships = await _db.ChatParticipantes
             .AsNoTracking()
+            .AsSplitQuery()
             .Where(cp => cp.UsuarioId == userId && cp.Activo)
             .Include(cp => cp.Chat)
             .ToListAsync();
 
+        if (!memberships.Any())
+            return Ok(new List<ChatListItemDto>());
+
         var chatIds = memberships.Select(m => m.ChatId).ToList();
 
-        // 2. Cargar todos los participantes de esos chats en una lista plana 
-        // Esto evita el error "Cycles are not allowed in no-tracking queries"
+        // ✅ OPTIMIZACIÓN 2: AsSplitQuery para participantes
         var allParticipants = await _db.ChatParticipantes
             .AsNoTracking()
+            .AsSplitQuery()
             .Where(p => chatIds.Contains(p.ChatId) && p.Activo)
             .Include(p => p.Usuario)
             .ToListAsync();
 
-        // 3. Obtener el último mensaje de cada chat
+        // ✅ OPTIMIZACIÓN 3: Query más eficiente para último mensaje
         var lastMessages = await _db.Mensajes
             .AsNoTracking()
             .Where(m => chatIds.Contains(m.ChatId))
             .GroupBy(m => m.ChatId)
-            .Select(g => g.OrderByDescending(m => m.FechaEnvio).FirstOrDefault())
+            .Select(g => new
+            {
+                ChatId = g.Key,
+                LastMessage = g.OrderByDescending(m => m.FechaEnvio).FirstOrDefault()
+            })
             .ToListAsync();
 
         var lastMessageMap = lastMessages
-            .Where(m => m != null)
-            .ToDictionary(m => m!.ChatId, m => m);
+            .Where(x => x.LastMessage != null)
+            .ToDictionary(x => x.ChatId, x => x.LastMessage!);
 
-        // 4. Proyectar al DTO combinando los datos en memoria
+        // ✅ OPTIMIZACIÓN 4: Proyección más eficiente
         var result = memberships.Select(cp =>
         {
             var chat = cp.Chat;
@@ -60,7 +68,6 @@ public class ChatsController : ControllerBase
 
             bool isGroup = chat.TipoChat == "group";
 
-            // Buscamos al otro participante en la lista plana que cargamos en el paso 2
             var otherParticipant = !isGroup
                 ? allParticipants.FirstOrDefault(p => p.ChatId == chat.ChatId && p.UsuarioId != userId)?.Usuario
                 : null;
@@ -91,10 +98,13 @@ public class ChatsController : ControllerBase
     [HttpPost("direct")]
     public async Task<IActionResult> CreateDirectChat([FromBody] CreateDirectChatRequest request)
     {
+        // ✅ OPTIMIZACIÓN: AsNoTracking + query más simple
         var existingChat = await _db.Chats
+            .AsNoTracking()
             .Where(c => c.TipoChat == "individual")
             .Where(c => c.Participantes.Any(p => p.UsuarioId == request.CurrentUserId) &&
                         c.Participantes.Any(p => p.UsuarioId == request.OtherUserId))
+            .Select(c => new { c.ChatId })
             .FirstOrDefaultAsync();
 
         if (existingChat != null)
@@ -195,7 +205,9 @@ public class ChatsController : ControllerBase
     [HttpPut("{chatId:long}/group")]
     public async Task<IActionResult> UpdateGroup(long chatId, [FromBody] FullUpdateGroupRequest request)
     {
+        // ✅ OPTIMIZACIÓN: AsSplitQuery
         var chat = await _db.Chats
+            .AsSplitQuery()
             .Include(c => c.Participantes)
             .FirstOrDefaultAsync(c => c.ChatId == chatId && c.TipoChat == "group");
 
@@ -207,7 +219,6 @@ public class ChatsController : ControllerBase
             using var transaction = await _db.Database.BeginTransactionAsync();
             try
             {
-                // Actualizar información básica del grupo
                 chat.Nombre = !string.IsNullOrWhiteSpace(request.GroupName) ? request.GroupName.Trim() : chat.Nombre;
                 chat.Descripcion = request.GroupDescription ?? chat.Descripcion;
                 chat.FotoUrl = request.GroupPhoto ?? chat.FotoUrl;
@@ -218,7 +229,6 @@ public class ChatsController : ControllerBase
                 var currentMemberIds = chat.Participantes.Where(p => p.Activo).Select(p => p.UsuarioId).ToList();
                 var incomingMemberIds = request.MemberIds ?? new List<long>();
 
-                // ✅ AGREGAR NUEVOS MIEMBROS
                 var newMemberIds = incomingMemberIds.Where(id => !currentMemberIds.Contains(id)).ToList();
                 foreach (var newId in newMemberIds)
                 {
@@ -232,21 +242,18 @@ public class ChatsController : ControllerBase
                     });
                 }
 
-                // ✅ ELIMINAR MIEMBROS QUE YA NO ESTÁN (excepto el creador)
                 var removedMemberIds = currentMemberIds.Where(id => !incomingMemberIds.Contains(id)).ToList();
                 foreach (var removedId in removedMemberIds)
                 {
-                    // No permitir eliminar al creador del grupo
                     if (removedId == chat.CreadoPorUsuarioId) continue;
                     
                     var participantToRemove = chat.Participantes.FirstOrDefault(p => p.UsuarioId == removedId && p.Activo);
                     if (participantToRemove != null)
                     {
-                        participantToRemove.Activo = false; // Borrado lógico
+                        participantToRemove.Activo = false;
                     }
                 }
 
-                // ✅ ACTUALIZAR ROLES DE ADMIN
                 var incomingAdminIds = request.AdminIds ?? new List<long>();
                 foreach (var participant in chat.Participantes.Where(p => p.Activo))
                 {
@@ -278,7 +285,6 @@ public class ChatsController : ControllerBase
             using var transaction = await _db.Database.BeginTransactionAsync();
             try
             {
-                // 1. Verificar participante
                 var participant = await _db.ChatParticipantes
                     .FirstOrDefaultAsync(cp => cp.ChatId == chatId && cp.UsuarioId == userId);
 
@@ -286,9 +292,6 @@ public class ChatsController : ControllerBase
 
                 if (clearHistory)
                 {
-                    // --- EL ORDEN AQUÍ ES CRÍTICO ---
-
-                    // A. Obtener IDs de los mensajes de este chat
                     var messageIds = await _db.Mensajes
                         .Where(m => m.ChatId == chatId)
                         .Select(m => m.MensajeId)
@@ -296,26 +299,22 @@ public class ChatsController : ControllerBase
 
                     if (messageIds.Any())
                     {
-                        // B. Borrar primero los ESTADOS de esos mensajes (La restricción FK_MensajeEstados_Mensajes)
                         var states = _db.MensajeEstados.Where(me => messageIds.Contains(me.MensajeId));
                         _db.MensajeEstados.RemoveRange(states);
-                        await _db.SaveChangesAsync(); // Guardamos para liberar la FK
+                        await _db.SaveChangesAsync();
 
-                        // C. Ahora sí podemos borrar los MENSAJES
                         var messages = _db.Mensajes.Where(m => m.ChatId == chatId);
                         _db.Mensajes.RemoveRange(messages);
                         await _db.SaveChangesAsync();
                     }
                 }
 
-                // 2. Borrado lógico del participante
                 participant.Activo = false;
                 _db.Entry(participant).State = EntityState.Modified;
 
                 await _db.SaveChangesAsync();
                 await transaction.CommitAsync();
 
-                // 3. Notificar vía SignalR
                 await _hubContext.Clients.User(userId.ToString()).SendAsync("ChatDeleted", chatId);
 
                 return Ok(new { message = "Chat e historial eliminados correctamente" });
@@ -323,7 +322,6 @@ public class ChatsController : ControllerBase
             catch (Exception ex)
             {
                 await transaction.RollbackAsync();
-                // Esto te devolverá el error real si algo más falla
                 return StatusCode(500, new
                 {
                     error = "Error de integridad referencial",
@@ -336,16 +334,23 @@ public class ChatsController : ControllerBase
     [HttpGet("my-groups/{userId:long}")]
     public async Task<IActionResult> GetMyGroups(long userId)
     {
+        // ✅ OPTIMIZACIÓN: AsSplitQuery
         var memberships = await _db.ChatParticipantes
             .AsNoTracking()
+            .AsSplitQuery()
             .Where(cp => cp.UsuarioId == userId && cp.Activo && cp.Chat.TipoChat == "group")
             .Include(cp => cp.Chat)
             .ToListAsync();
 
+        if (!memberships.Any())
+            return Ok(new List<object>());
+
         var chatIds = memberships.Select(m => m.ChatId).ToList();
 
+        // ✅ OPTIMIZACIÓN: AsSplitQuery
         var allParticipants = await _db.ChatParticipantes
             .AsNoTracking()
+            .AsSplitQuery()
             .Where(p => chatIds.Contains(p.ChatId) && p.Activo)
             .Include(p => p.Usuario)
             .ToListAsync();
@@ -378,5 +383,4 @@ public class ChatsController : ControllerBase
 
         return Ok(result);
     }
-
 }
