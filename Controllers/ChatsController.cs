@@ -23,73 +23,87 @@ public class ChatsController : ControllerBase
     [HttpGet("user/{userId:long}")]
     public async Task<ActionResult<IEnumerable<ChatListItemDto>>> GetChats(long userId)
     {
-        // ✅ OPTIMIZACIÓN 1: AsSplitQuery + cargar solo campos necesarios
-        var memberships = await _db.ChatParticipantes
+        // ✅ OPTIMIZACIÓN CRÍTICA: Proyección directa SIN Include
+        var chats = await _db.ChatParticipantes
             .AsNoTracking()
-            .AsSplitQuery()
             .Where(cp => cp.UsuarioId == userId && cp.Activo)
-            .Include(cp => cp.Chat)
-            .ToListAsync();
-
-        if (!memberships.Any())
-            return Ok(new List<ChatListItemDto>());
-
-        var chatIds = memberships.Select(m => m.ChatId).ToList();
-
-        // ✅ OPTIMIZACIÓN 2: AsSplitQuery para participantes
-        var allParticipants = await _db.ChatParticipantes
-            .AsNoTracking()
-            .AsSplitQuery()
-            .Where(p => chatIds.Contains(p.ChatId) && p.Activo)
-            .Include(p => p.Usuario)
-            .ToListAsync();
-
-        // ✅ OPTIMIZACIÓN 3: Query más eficiente para último mensaje
-        var lastMessages = await _db.Mensajes
-            .AsNoTracking()
-            .Where(m => chatIds.Contains(m.ChatId))
-            .GroupBy(m => m.ChatId)
-            .Select(g => new
+            .Select(cp => new
             {
-                ChatId = g.Key,
-                LastMessage = g.OrderByDescending(m => m.FechaEnvio).FirstOrDefault()
+                ChatId = cp.ChatId,
+                TipoChat = cp.Chat.TipoChat,
+                NombreGrupo = cp.Chat.Nombre,
+                FotoGrupo = cp.Chat.FotoUrl,
+                DescripcionGrupo = cp.Chat.Descripcion,
+                FechaCreacion = cp.Chat.FechaCreacion,
+                
+                // ✅ Solo traer el otro participante para chats individuales
+                OtroParticipante = cp.Chat.TipoChat == "individual"
+                    ? cp.Chat.Participantes
+                        .Where(p => p.UsuarioId != userId && p.Activo)
+                        .Select(p => new
+                        {
+                            p.UsuarioId,
+                            p.Usuario.Nombre,
+                            p.Usuario.FotoUrl,
+                            p.Usuario.Descripcion
+                        })
+                        .FirstOrDefault()
+                    : null,
+                
+                // ✅ Solo el último mensaje (no todos)
+                UltimoMensaje = cp.Chat.Mensajes
+                    .Where(m => !m.EliminadoParaTodos)
+                    .OrderByDescending(m => m.FechaEnvio)
+                    .Select(m => new
+                    {
+                        m.Contenido,
+                        m.FechaEnvio
+                    })
+                    .FirstOrDefault(),
+                
+                // ✅ Contar no leídos directamente en BD
+                MensajesNoLeidos = cp.Chat.Mensajes.Count(m =>
+                    !m.EliminadoParaTodos &&
+                    m.Estados.Any(e =>
+                        e.UsuarioId == userId &&
+                        e.Estado == "received"
+                    )
+                )
             })
             .ToListAsync();
 
-        var lastMessageMap = lastMessages
-            .Where(x => x.LastMessage != null)
-            .ToDictionary(x => x.ChatId, x => x.LastMessage!);
+        if (!chats.Any())
+            return Ok(new List<ChatListItemDto>());
 
-        // ✅ OPTIMIZACIÓN 4: Proyección más eficiente
-        var result = memberships.Select(cp =>
+        // ✅ Mapear en memoria (descifrado si es necesario)
+        var result = chats.Select(c =>
         {
-            var chat = cp.Chat;
-            lastMessageMap.TryGetValue(chat.ChatId, out var lastMessage);
-
-            bool isGroup = chat.TipoChat == "group";
-
-            var otherParticipant = !isGroup
-                ? allParticipants.FirstOrDefault(p => p.ChatId == chat.ChatId && p.UsuarioId != userId)?.Usuario
-                : null;
+            bool isGroup = c.TipoChat == "group";
 
             return new ChatListItemDto
             {
-                Id = chat.ChatId,
-                ParticipantId = isGroup ? 0 : (otherParticipant?.UsuarioId ?? 0),
-                ParticipantName = isGroup ? (chat.Nombre ?? "Grupo") : (otherParticipant?.Nombre ?? "Usuario"),
-                ParticipantPhoto = isGroup ? chat.FotoUrl : otherParticipant?.FotoUrl,
-                ParticipantDescription = isGroup ? chat.Descripcion : otherParticipant?.Descripcion,
+                Id = c.ChatId,
+                ParticipantId = isGroup ? 0 : (c.OtroParticipante?.UsuarioId ?? 0),
+                ParticipantName = isGroup
+                    ? (c.NombreGrupo ?? "Grupo")
+                    : (c.OtroParticipante?.Nombre ?? "Usuario"),
+                ParticipantPhoto = isGroup
+                    ? c.FotoGrupo
+                    : c.OtroParticipante?.FotoUrl,
+                ParticipantDescription = isGroup
+                    ? c.DescripcionGrupo
+                    : c.OtroParticipante?.Descripcion,
                 ParticipantStatus = isGroup ? null : "Online",
-                LastMessage = lastMessage?.Contenido ?? "Sin mensajes",
-                LastMessageTime = lastMessage?.FechaEnvio,
-                Unread = 0,
+                LastMessage = c.UltimoMensaje?.Contenido ?? "Sin mensajes",
+                LastMessageTime = c.UltimoMensaje?.FechaEnvio ?? c.FechaCreacion,
+                Unread = c.MensajesNoLeidos,
                 Pinned = false,
                 Archived = false,
                 IsGroup = isGroup,
                 Silenced = false
             };
         })
-        .OrderByDescending(x => x.LastMessageTime ?? DateTime.MinValue)
+        .OrderByDescending(x => x.LastMessageTime)
         .ToList();
 
         return Ok(result);
@@ -98,20 +112,22 @@ public class ChatsController : ControllerBase
     [HttpPost("direct")]
     public async Task<IActionResult> CreateDirectChat([FromBody] CreateDirectChatRequest request)
     {
-        // ✅ OPTIMIZACIÓN: AsNoTracking + query más simple
-        var existingChat = await _db.Chats
+        // ✅ OPTIMIZACIÓN: Query simplificada
+        var existingChatId = await _db.ChatParticipantes
             .AsNoTracking()
-            .Where(c => c.TipoChat == "individual")
-            .Where(c => c.Participantes.Any(p => p.UsuarioId == request.CurrentUserId) &&
-                        c.Participantes.Any(p => p.UsuarioId == request.OtherUserId))
-            .Select(c => new { c.ChatId })
+            .Where(cp => cp.UsuarioId == request.CurrentUserId && cp.Activo)
+            .Where(cp => cp.Chat.TipoChat == "individual")
+            .Where(cp => cp.Chat.Participantes.Any(p =>
+                p.UsuarioId == request.OtherUserId && p.Activo))
+            .Select(cp => cp.ChatId)
             .FirstOrDefaultAsync();
 
-        if (existingChat != null)
+        if (existingChatId > 0)
         {
-            return Ok(new { chatId = existingChat.ChatId, isNew = false });
+            return Ok(new { chatId = existingChatId, isNew = false });
         }
 
+        // ✅ Crear chat nuevo
         var strategy = _db.Database.CreateExecutionStrategy();
         return await strategy.ExecuteAsync(async () =>
         {
@@ -123,16 +139,30 @@ public class ChatsController : ControllerBase
                     TipoChat = "individual",
                     FechaCreacion = DateTime.UtcNow,
                     Activo = true,
-                    CodigoConversacion = $"IND-{Guid.NewGuid().ToString()[..8].ToUpper()}"
+                    CodigoConversacion = $"IND-{Guid.NewGuid():N}"[..12].ToUpper()
                 };
 
                 _db.Chats.Add(newChat);
                 await _db.SaveChangesAsync();
 
-                var participantes = new List<ChatParticipante>
+                var participantes = new[]
                 {
-                    new ChatParticipante { ChatId = newChat.ChatId, UsuarioId = request.CurrentUserId, Rol = "member", Activo = true, FechaUnion = DateTime.UtcNow },
-                    new ChatParticipante { ChatId = newChat.ChatId, UsuarioId = request.OtherUserId, Rol = "member", Activo = true, FechaUnion = DateTime.UtcNow }
+                    new ChatParticipante
+                    {
+                        ChatId = newChat.ChatId,
+                        UsuarioId = request.CurrentUserId,
+                        Rol = "member",
+                        Activo = true,
+                        FechaUnion = DateTime.UtcNow
+                    },
+                    new ChatParticipante
+                    {
+                        ChatId = newChat.ChatId,
+                        UsuarioId = request.OtherUserId,
+                        Rol = "member",
+                        Activo = true,
+                        FechaUnion = DateTime.UtcNow
+                    }
                 };
 
                 _db.ChatParticipantes.AddRange(participantes);
@@ -141,10 +171,10 @@ public class ChatsController : ControllerBase
                 await transaction.CommitAsync();
                 return Ok(new { chatId = newChat.ChatId, isNew = true });
             }
-            catch (Exception)
+            catch (Exception ex)
             {
                 await transaction.RollbackAsync();
-                return StatusCode(500, "Error al crear el chat");
+                return StatusCode(500, new { error = "Error al crear el chat", detalle = ex.Message });
             }
         });
     }
@@ -164,7 +194,7 @@ public class ChatsController : ControllerBase
                 var chat = new Chat
                 {
                     TipoChat = "group",
-                    CodigoConversacion = $"GRP-{Guid.NewGuid().ToString()[..8].ToUpper()}",
+                    CodigoConversacion = $"GRP-{Guid.NewGuid():N}"[..12].ToUpper(),
                     Nombre = request.GroupName.Trim(),
                     FotoUrl = request.GroupPhoto ?? "",
                     Descripcion = request.GroupDescription ?? "",
@@ -177,16 +207,18 @@ public class ChatsController : ControllerBase
                 await _db.SaveChangesAsync();
 
                 var memberIds = request.MemberIds ?? new List<long>();
-                if (!memberIds.Contains(request.CurrentUserId)) memberIds.Add(request.CurrentUserId);
+                if (!memberIds.Contains(request.CurrentUserId))
+                    memberIds.Add(request.CurrentUserId);
 
+                var now = DateTime.UtcNow;
                 var participantes = memberIds.Select(id => new ChatParticipante
                 {
                     ChatId = chat.ChatId,
                     UsuarioId = id,
                     Rol = (id == request.CurrentUserId) ? "admin" : "member",
                     Activo = true,
-                    FechaUnion = DateTime.UtcNow
-                });
+                    FechaUnion = now
+                }).ToList();
 
                 _db.ChatParticipantes.AddRange(participantes);
                 await _db.SaveChangesAsync();
@@ -205,13 +237,12 @@ public class ChatsController : ControllerBase
     [HttpPut("{chatId:long}/group")]
     public async Task<IActionResult> UpdateGroup(long chatId, [FromBody] FullUpdateGroupRequest request)
     {
-        // ✅ OPTIMIZACIÓN: AsSplitQuery
         var chat = await _db.Chats
-            .AsSplitQuery()
-            .Include(c => c.Participantes)
+            .Include(c => c.Participantes.Where(p => p.Activo))
             .FirstOrDefaultAsync(c => c.ChatId == chatId && c.TipoChat == "group");
 
-        if (chat == null) return NotFound(new { error = "El grupo no existe" });
+        if (chat == null)
+            return NotFound(new { error = "El grupo no existe" });
 
         var strategy = _db.Database.CreateExecutionStrategy();
         return await strategy.ExecuteAsync(async () =>
@@ -219,48 +250,59 @@ public class ChatsController : ControllerBase
             using var transaction = await _db.Database.BeginTransactionAsync();
             try
             {
-                chat.Nombre = !string.IsNullOrWhiteSpace(request.GroupName) ? request.GroupName.Trim() : chat.Nombre;
+                // ✅ Actualizar info del grupo
+                chat.Nombre = !string.IsNullOrWhiteSpace(request.GroupName)
+                    ? request.GroupName.Trim()
+                    : chat.Nombre;
                 chat.Descripcion = request.GroupDescription ?? chat.Descripcion;
                 chat.FotoUrl = request.GroupPhoto ?? chat.FotoUrl;
                 chat.Reglas = request.GroupRules ?? chat.Reglas;
                 chat.PermisoEnviarMensajes = request.OnlyAdminsCanPost ? "admins" : "all";
                 chat.PermisoEditarInfo = request.OnlyAdminsCanEdit ? "admins" : "all";
 
-                var currentMemberIds = chat.Participantes.Where(p => p.Activo).Select(p => p.UsuarioId).ToList();
-                var incomingMemberIds = request.MemberIds ?? new List<long>();
+                var currentMemberIds = chat.Participantes.Select(p => p.UsuarioId).ToHashSet();
+                var incomingMemberIds = (request.MemberIds ?? new List<long>()).ToHashSet();
 
-                var newMemberIds = incomingMemberIds.Where(id => !currentMemberIds.Contains(id)).ToList();
-                foreach (var newId in newMemberIds)
+                // ✅ Agregar nuevos miembros
+                var newMemberIds = incomingMemberIds.Except(currentMemberIds).ToList();
+                if (newMemberIds.Any())
                 {
-                    _db.ChatParticipantes.Add(new ChatParticipante
+                    var now = DateTime.UtcNow;
+                    var newParticipants = newMemberIds.Select(id => new ChatParticipante
                     {
                         ChatId = chatId,
-                        UsuarioId = newId,
+                        UsuarioId = id,
                         Rol = "member",
                         Activo = true,
-                        FechaUnion = DateTime.UtcNow
-                    });
+                        FechaUnion = now
+                    }).ToList();
+
+                    _db.ChatParticipantes.AddRange(newParticipants);
                 }
 
-                var removedMemberIds = currentMemberIds.Where(id => !incomingMemberIds.Contains(id)).ToList();
-                foreach (var removedId in removedMemberIds)
+                // ✅ Remover miembros
+                var removedMemberIds = currentMemberIds.Except(incomingMemberIds).ToList();
+                if (removedMemberIds.Any())
                 {
-                    if (removedId == chat.CreadoPorUsuarioId) continue;
-                    
-                    var participantToRemove = chat.Participantes.FirstOrDefault(p => p.UsuarioId == removedId && p.Activo);
-                    if (participantToRemove != null)
-                    {
-                        participantToRemove.Activo = false;
-                    }
+                    var participantsToRemove = chat.Participantes
+                        .Where(p => removedMemberIds.Contains(p.UsuarioId) &&
+                                   p.UsuarioId != chat.CreadoPorUsuarioId)
+                        .ToList();
+
+                    foreach (var p in participantsToRemove)
+                        p.Activo = false;
                 }
 
-                var incomingAdminIds = request.AdminIds ?? new List<long>();
-                foreach (var participant in chat.Participantes.Where(p => p.Activo))
+                // ✅ Actualizar roles
+                var adminIds = (request.AdminIds ?? new List<long>()).ToHashSet();
+                foreach (var participant in chat.Participantes)
                 {
-                    if (incomingAdminIds.Contains(participant.UsuarioId))
-                        participant.Rol = "admin";
-                    else if (participant.UsuarioId != chat.CreadoPorUsuarioId)
-                        participant.Rol = "member";
+                    if (participant.UsuarioId == chat.CreadoPorUsuarioId)
+                        continue; // El creador siempre es admin
+
+                    participant.Rol = adminIds.Contains(participant.UsuarioId)
+                        ? "admin"
+                        : "member";
                 }
 
                 await _db.SaveChangesAsync();
@@ -288,34 +330,36 @@ public class ChatsController : ControllerBase
                 var participant = await _db.ChatParticipantes
                     .FirstOrDefaultAsync(cp => cp.ChatId == chatId && cp.UsuarioId == userId);
 
-                if (participant == null) return NotFound("No eres participante de este chat");
+                if (participant == null)
+                    return NotFound("No eres participante de este chat");
 
                 if (clearHistory)
                 {
-                    var messageIds = await _db.Mensajes
+                    // ✅ OPTIMIZACIÓN: Delete en cascada más eficiente
+                    await _db.MensajeEstados
+                        .Where(me => me.Mensaje.ChatId == chatId)
+                        .ExecuteDeleteAsync();
+
+                    await _db.Mensajes
                         .Where(m => m.ChatId == chatId)
-                        .Select(m => m.MensajeId)
-                        .ToListAsync();
-
-                    if (messageIds.Any())
-                    {
-                        var states = _db.MensajeEstados.Where(me => messageIds.Contains(me.MensajeId));
-                        _db.MensajeEstados.RemoveRange(states);
-                        await _db.SaveChangesAsync();
-
-                        var messages = _db.Mensajes.Where(m => m.ChatId == chatId);
-                        _db.Mensajes.RemoveRange(messages);
-                        await _db.SaveChangesAsync();
-                    }
+                        .ExecuteDeleteAsync();
                 }
 
                 participant.Activo = false;
-                _db.Entry(participant).State = EntityState.Modified;
-
                 await _db.SaveChangesAsync();
                 await transaction.CommitAsync();
 
-                await _hubContext.Clients.User(userId.ToString()).SendAsync("ChatDeleted", chatId);
+                // ✅ Fire-and-forget SignalR
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await _hubContext.Clients
+                            .User(userId.ToString())
+                            .SendAsync("ChatDeleted", chatId);
+                    }
+                    catch { }
+                });
 
                 return Ok(new { message = "Chat e historial eliminados correctamente" });
             }
@@ -330,55 +374,55 @@ public class ChatsController : ControllerBase
             }
         });
     }
-    
+
     [HttpGet("my-groups/{userId:long}")]
     public async Task<IActionResult> GetMyGroups(long userId)
     {
-        // ✅ OPTIMIZACIÓN: AsSplitQuery
-        var memberships = await _db.ChatParticipantes
+        // ✅ OPTIMIZACIÓN CRÍTICA: Proyección directa
+        var groups = await _db.ChatParticipantes
             .AsNoTracking()
-            .AsSplitQuery()
-            .Where(cp => cp.UsuarioId == userId && cp.Activo && cp.Chat.TipoChat == "group")
-            .Include(cp => cp.Chat)
-            .ToListAsync();
-
-        if (!memberships.Any())
-            return Ok(new List<object>());
-
-        var chatIds = memberships.Select(m => m.ChatId).ToList();
-
-        // ✅ OPTIMIZACIÓN: AsSplitQuery
-        var allParticipants = await _db.ChatParticipantes
-            .AsNoTracking()
-            .AsSplitQuery()
-            .Where(p => chatIds.Contains(p.ChatId) && p.Activo)
-            .Include(p => p.Usuario)
-            .ToListAsync();
-
-        var result = memberships.Select(cp =>
-        {
-            var chat = cp.Chat;
-            var participants = allParticipants.Where(p => p.ChatId == chat.ChatId).ToList();
-
-            return new
+            .Where(cp =>
+                cp.UsuarioId == userId &&
+                cp.Activo &&
+                cp.Chat.TipoChat == "group")
+            .Select(cp => new
             {
-                id = chat.ChatId,
-                nombre = chat.Nombre ?? "Grupo",
-                fotoUrl = chat.FotoUrl ?? "",
-                descripcion = chat.Descripcion ?? "",
-                reglas = chat.Reglas ?? "",
-                permisoEnviarMensajes = chat.PermisoEnviarMensajes ?? "all",
-                permisoEditarInfo = chat.PermisoEditarInfo ?? "admins",
-                creadoPorUsuarioId = chat.CreadoPorUsuarioId ?? 0,
-                fechaCreacion = chat.FechaCreacion,
-                isGroup = true,
-                participantes = participants.Select(p => new
-                {
-                    idUsuario = p.UsuarioId,
-                    nombre = p.Usuario?.Nombre ?? "Usuario",
-                    rol = p.Rol ?? "member"
-                }).ToList()
-            };
+                Id = cp.ChatId,
+                Nombre = cp.Chat.Nombre ?? "Grupo",
+                FotoUrl = cp.Chat.FotoUrl ?? "",
+                Descripcion = cp.Chat.Descripcion ?? "",
+                Reglas = cp.Chat.Reglas ?? "",
+                PermisoEnviarMensajes = cp.Chat.PermisoEnviarMensajes ?? "all",
+                PermisoEditarInfo = cp.Chat.PermisoEditarInfo ?? "admins",
+                CreadoPorUsuarioId = cp.Chat.CreadoPorUsuarioId ?? 0,
+                FechaCreacion = cp.Chat.FechaCreacion,
+                
+                // ✅ Solo IDs y nombres de participantes
+                Participantes = cp.Chat.Participantes
+                    .Where(p => p.Activo)
+                    .Select(p => new
+                    {
+                        IdUsuario = p.UsuarioId,
+                        Nombre = p.Usuario.Nombre ?? "Usuario",
+                        Rol = p.Rol ?? "member"
+                    })
+                    .ToList()
+            })
+            .ToListAsync();
+
+        var result = groups.Select(g => new
+        {
+            g.Id,
+            nombre = g.Nombre,
+            fotoUrl = g.FotoUrl,
+            descripcion = g.Descripcion,
+            reglas = g.Reglas,
+            permisoEnviarMensajes = g.PermisoEnviarMensajes,
+            permisoEditarInfo = g.PermisoEditarInfo,
+            creadoPorUsuarioId = g.CreadoPorUsuarioId,
+            fechaCreacion = g.FechaCreacion,
+            isGroup = true,
+            participantes = g.Participantes
         }).ToList();
 
         return Ok(result);
