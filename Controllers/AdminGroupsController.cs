@@ -21,34 +21,35 @@ public class AdminGroupsController : ControllerBase
     {
         var groups = await _db.Chats
             .Where(c => c.TipoChat == "group" && c.Activo)
-            .Include(c => c.Participantes)
-            .ThenInclude(p => p.Usuario)
-            .Include(c => c.Mensajes)
             .OrderByDescending(c => c.FechaCreacion)
+            .Select(g => new AdminGroupDto(
+                g.ChatId,
+                g.Nombre ?? "Grupo",
+                g.Participantes
+                    .Where(p => p.UsuarioId == g.CreadoPorUsuarioId)
+                    .Select(p => p.Usuario.Nombre)
+                    .FirstOrDefault() ?? "N/D",
+                g.Participantes.Count(p => p.Activo),
+                g.FechaCreacion,
+                g.Mensajes.Count(),
+                g.Descripcion
+            ))
             .ToListAsync();
 
-        var result = groups.Select(g => new AdminGroupDto(
-            g.ChatId,
-            g.Nombre ?? "Grupo",
-            g.Participantes.FirstOrDefault(p => p.UsuarioId == g.CreadoPorUsuarioId)?.Usuario?.Nombre ?? "N/D",
-            g.Participantes.Count(p => p.Activo),
-            g.FechaCreacion,
-            g.Mensajes.Count,
-            g.Descripcion
-        ));
-
-        return Ok(result);
+        return Ok(groups);
     }
 
     [HttpDelete("{chatId:long}")]
     public async Task<IActionResult> DeleteGroup(long chatId)
     {
         var group = await _db.Chats.FirstOrDefaultAsync(c => c.ChatId == chatId && c.TipoChat == "group");
+        
         if (group is null)
             return NotFound();
 
         group.Activo = false;
         await _db.SaveChangesAsync();
+        
         return Ok(new { success = true });
     }
 }
