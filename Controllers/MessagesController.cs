@@ -248,7 +248,7 @@ public class MessagesController : ControllerBase
     {
         try
         {
-            // ✅ Buscar el estado existente DIRECTAMENTE en DbSet
+            // Buscar el estado existente DIRECTAMENTE en DbSet (evita problemas de tracking)
             var estado = await _db.MensajeEstados
                 .FirstOrDefaultAsync(e => e.MensajeId == messageId && e.UsuarioId == request.UserId);
             
@@ -259,7 +259,7 @@ public class MessagesController : ControllerBase
                 {
                     MensajeId = messageId,
                     UsuarioId = request.UserId,
-                    Estado = "seen",
+                    Estado = "seen",  // ✅ "seen" funciona con el CHECK constraint
                     FechaEntrega = DateTime.UtcNow,
                     FechaVista = DateTime.UtcNow
                 };
@@ -268,7 +268,7 @@ public class MessagesController : ControllerBase
             else
             {
                 // Si existe, solo actualizar
-                estado.Estado = "seen";
+                estado.Estado = "seen";  // ✅ "seen" funciona con el CHECK constraint
                 estado.FechaVista = DateTime.UtcNow;
                 if (estado.FechaEntrega == null)
                     estado.FechaEntrega = DateTime.UtcNow;
