@@ -112,7 +112,7 @@ public class MessagesController : ControllerBase
             {
                 MensajeId = message.MensajeId,
                 UsuarioId = participantId,
-                Estado = "sent"
+                Estado = "delivered"
             });
         }
         
