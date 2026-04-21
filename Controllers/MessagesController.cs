@@ -100,7 +100,10 @@ public class MessagesController : ControllerBase
 
         _db.Mensajes.Add(message);
         
-        // Crear estados para todos los participantes (excepto el remitente)
+        // ✅ GUARDAR PRIMERO EL MENSAJE para obtener el MensajeId
+        await _db.SaveChangesAsync();
+        
+        // ✅ AHORA crear estados para todos los participantes (excepto el remitente)
         var participantIds = chat.Participantes
             .Where(p => p.Activo && p.UsuarioId != request.SenderId)
             .Select(p => p.UsuarioId)
@@ -112,10 +115,11 @@ public class MessagesController : ControllerBase
             {
                 MensajeId = message.MensajeId,
                 UsuarioId = participantId,
-                Estado = "received"  // ✅ CAMBIO AQUÍ
+                Estado = "received"
             });
         }
         
+        // ✅ GUARDAR LOS ESTADOS
         await _db.SaveChangesAsync();
 
         // Preparar datos del mensaje para SignalR
@@ -207,14 +211,14 @@ public class MessagesController : ControllerBase
                 {
                     MensajeId = messageId,
                     UsuarioId = request.UserId,
-                    Estado = "delivered",
+                    Estado = "received",
                     FechaEntrega = DateTime.UtcNow
                 };
                 _db.MensajeEstados.Add(estado);
             }
             else if (estado.Estado == "sent")
             {
-                estado.Estado = "delivered";
+                estado.Estado = "received";
                 estado.FechaEntrega = DateTime.UtcNow;
             }
 
@@ -248,7 +252,7 @@ public class MessagesController : ControllerBase
     {
         try
         {
-            // Buscar el estado existente DIRECTAMENTE en DbSet (evita problemas de tracking)
+            // Buscar el estado existente DIRECTAMENTE en DbSet
             var estado = await _db.MensajeEstados
                 .FirstOrDefaultAsync(e => e.MensajeId == messageId && e.UsuarioId == request.UserId);
             
@@ -259,7 +263,7 @@ public class MessagesController : ControllerBase
                 {
                     MensajeId = messageId,
                     UsuarioId = request.UserId,
-                    Estado = "seen",  // ✅ "seen" funciona con el CHECK constraint
+                    Estado = "seen",
                     FechaEntrega = DateTime.UtcNow,
                     FechaVista = DateTime.UtcNow
                 };
@@ -268,7 +272,7 @@ public class MessagesController : ControllerBase
             else
             {
                 // Si existe, solo actualizar
-                estado.Estado = "seen";  // ✅ "seen" funciona con el CHECK constraint
+                estado.Estado = "seen";
                 estado.FechaVista = DateTime.UtcNow;
                 if (estado.FechaEntrega == null)
                     estado.FechaEntrega = DateTime.UtcNow;
