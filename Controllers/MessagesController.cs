@@ -24,46 +24,77 @@ public class MessagesController : ControllerBase
     }
 
     [HttpGet("chats/{chatId:long}/messages")]
-    public async Task<ActionResult<IEnumerable<MessageDto>>> GetMessages(long chatId, [FromQuery] long? userId = null)
+    public async Task<ActionResult<IEnumerable<MessageDto>>> GetMessages(
+        long chatId, 
+        [FromQuery] long? userId = null,
+        [FromQuery] int limit = 100) // ✅ Limitar mensajes
     {
+        // ✅ OPTIMIZACIÓN CRÍTICA: Proyección directa sin Include
         var messages = await _db.Mensajes
-            .AsNoTracking()
-            .Where(m => m.ChatId == chatId)
-            .Include(m => m.RemitenteUsuario)
-            .Include(m => m.Adjuntos)
-            .Include(m => m.Estados)
-            .OrderBy(m => m.FechaEnvio)
-            .ToListAsync();
-
-        var result = messages.Select(m =>
-        {
-            var userState = userId.HasValue
-                ? m.Estados.FirstOrDefault(e => e.UsuarioId == userId.Value)
-                : null;
-
-            // DESCIFRADO: Si el mensaje está marcado como encriptado y no está eliminado
-            string contenidoAMostrar = m.Contenido ?? "";
-            if (m.Encriptado && !m.EliminadoParaTodos && m.TipoMensaje == "text")
+            .AsNoTracking() // ✅ No rastrear cambios
+            .AsSplitQuery() // ✅ Evitar cartesian explosion
+            .Where(m => m.ChatId == chatId && !m.EliminadoParaTodos)
+            .OrderByDescending(m => m.FechaEnvio) // ✅ Más recientes primero
+            .Take(limit) // ✅ LIMITAR cantidad
+            .Select(m => new
             {
-                contenidoAMostrar = _encryptionService.Decrypt(contenidoAMostrar);
-            }
-
-            return new MessageDto(
                 m.MensajeId,
                 m.ChatId,
                 m.RemitenteUsuarioId,
-                m.RemitenteUsuario.Nombre,
-                contenidoAMostrar,
+                RemitenteNombre = m.RemitenteUsuario.Nombre,
+                m.Contenido,
                 m.FechaEnvio,
-                userState?.Estado ?? (m.EstadoServidor == "sent" ? "sent" : m.EstadoServidor),
+                m.EstadoServidor,
                 m.Encriptado,
                 m.Editado,
-                userState?.EliminadoParaMi ?? false,
                 m.EliminadoParaTodos,
                 m.TipoMensaje,
-                m.Adjuntos.FirstOrDefault()?.UrlArchivo
-            );
-        });
+                // ✅ Solo el primer adjunto (no todos)
+                ArchivoUrl = m.Adjuntos.FirstOrDefault() != null 
+                    ? m.Adjuntos.First().UrlArchivo 
+                    : null,
+                // ✅ Solo el estado del usuario actual
+                UserState = userId.HasValue
+                    ? m.Estados.FirstOrDefault(e => e.UsuarioId == userId.Value)
+                    : null
+            })
+            .ToListAsync();
+
+        // ✅ Descifrar en memoria (no en BD) y ordenar cronológicamente
+        var result = messages
+            .Select(m =>
+            {
+                string contenidoAMostrar = m.Contenido ?? "";
+                if (m.Encriptado && m.TipoMensaje == "text")
+                {
+                    try
+                    {
+                        contenidoAMostrar = _encryptionService.Decrypt(contenidoAMostrar);
+                    }
+                    catch
+                    {
+                        contenidoAMostrar = "[Error al descifrar]";
+                    }
+                }
+
+                return new MessageDto(
+                    m.MensajeId,
+                    m.ChatId,
+                    m.RemitenteUsuarioId,
+                    m.RemitenteNombre,
+                    contenidoAMostrar,
+                    m.FechaEnvio,
+                    m.UserState?.Estado ?? m.EstadoServidor,
+                    m.Encriptado,
+                    m.Editado,
+                    m.UserState?.EliminadoParaMi ?? false,
+                    m.EliminadoParaTodos,
+                    m.TipoMensaje,
+                    m.ArchivoUrl
+                );
+            })
+            .Reverse() // ✅ Cronológicamente para la UI
+            .ToList();
 
         return Ok(result);
     }
@@ -71,15 +102,37 @@ public class MessagesController : ControllerBase
     [HttpPost("chats/{chatId:long}/messages")]
     public async Task<IActionResult> SendMessage(long chatId, [FromBody] SendMessageRequest request)
     {
-        // Buscamos el chat e incluimos participantes para saber a quién notificar
+        // ✅ OPTIMIZACIÓN: AsNoTracking + Select solo lo necesario
         var chat = await _db.Chats
-            .Include(c => c.Participantes)
-            .FirstOrDefaultAsync(c => c.ChatId == chatId && c.Activo);
+            .AsNoTracking()
+            .Where(c => c.ChatId == chatId && c.Activo)
+            .Select(c => new
+            {
+                c.ChatId,
+                ParticipantIds = c.Participantes
+                    .Where(p => p.Activo && p.UsuarioId != request.SenderId)
+                    .Select(p => p.UsuarioId)
+                    .ToList()
+            })
+            .FirstOrDefaultAsync();
 
-        if (chat is null) return NotFound(new { error = "Chat no encontrado." });
+        if (chat is null) 
+            return NotFound(new { error = "Chat no encontrado." });
 
-        var sender = await _db.Usuarios.FirstOrDefaultAsync(u => u.UsuarioId == request.SenderId && !u.Eliminado);
-        if (sender is null) return BadRequest(new { error = "Remitente no válido." });
+        // ✅ OPTIMIZACIÓN: Solo verificar existencia (AnyAsync)
+        var senderExists = await _db.Usuarios
+            .AsNoTracking()
+            .AnyAsync(u => u.UsuarioId == request.SenderId && !u.Eliminado);
+            
+        if (!senderExists) 
+            return BadRequest(new { error = "Remitente no válido." });
+
+        // ✅ Obtener nombre para SignalR (query separada)
+        var senderName = await _db.Usuarios
+            .AsNoTracking()
+            .Where(u => u.UsuarioId == request.SenderId)
+            .Select(u => u.Nombre)
+            .FirstOrDefaultAsync();
 
         string contenidoFinal = request.Content;
         if (request.Type == "text")
@@ -99,45 +152,51 @@ public class MessagesController : ControllerBase
         };
 
         _db.Mensajes.Add(message);
-        
-        // ✅ GUARDAR PRIMERO EL MENSAJE para obtener el MensajeId
-        await _db.SaveChangesAsync();
-        
-        // ✅ AHORA crear estados para todos los participantes (excepto el remitente)
-        var participantIds = chat.Participantes
-            .Where(p => p.Activo && p.UsuarioId != request.SenderId)
-            .Select(p => p.UsuarioId)
-            .ToList();
+        await _db.SaveChangesAsync(); // ✅ Guardar mensaje primero
 
-        foreach (var participantId in participantIds)
+        // ✅ Crear estados en BATCH (más eficiente)
+        if (chat.ParticipantIds.Any())
         {
-            _db.MensajeEstados.Add(new MensajeEstado
+            var estados = chat.ParticipantIds.Select(participantId => new MensajeEstado
             {
                 MensajeId = message.MensajeId,
                 UsuarioId = participantId,
-                Estado = "received"
-            });
-        }
-        
-        // ✅ GUARDAR LOS ESTADOS
-        await _db.SaveChangesAsync();
+                Estado = "received",
+                FechaEntrega = DateTime.UtcNow
+            }).ToList();
 
-        // Preparar datos del mensaje para SignalR
+            _db.MensajeEstados.AddRange(estados); // ✅ AddRange es más rápido
+            await _db.SaveChangesAsync();
+        }
+
+        // ✅ Preparar datos para SignalR
         var messageData = new
         {
             id = message.MensajeId,
             chatId = message.ChatId,
             senderId = message.RemitenteUsuarioId,
-            senderName = sender.Nombre,
-            content = request.Content, // Enviamos texto plano para el tiempo real
+            senderName = senderName ?? "Usuario",
+            content = request.Content,
             timestamp = message.FechaEnvio,
             type = message.TipoMensaje,
             status = "sent",
             encrypted = true
         };
 
-        // Notificar a TODOS los participantes del chat (incluyendo el remitente)
-        await _hubContext.Clients.Group(chatId.ToString()).SendAsync("ReceiveMessage", messageData);
+        // ✅ Fire-and-forget para SignalR (no esperar)
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await _hubContext.Clients
+                    .Group(chatId.ToString())
+                    .SendAsync("ReceiveMessage", messageData);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error SignalR: {ex.Message}");
+            }
+        });
 
         return Ok(messageData);
     }
@@ -153,7 +212,18 @@ public class MessagesController : ControllerBase
         message.Encriptado = false;
 
         await _db.SaveChangesAsync();
-        await _hubContext.Clients.Group(message.ChatId.ToString()).SendAsync("MessageDeleted", messageId);
+
+        // ✅ Fire-and-forget SignalR
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await _hubContext.Clients
+                    .Group(message.ChatId.ToString())
+                    .SendAsync("MessageDeleted", messageId);
+            }
+            catch { }
+        });
 
         return Ok(new { success = true });
     }
@@ -167,8 +237,10 @@ public class MessagesController : ControllerBase
         if (state is null) return NotFound();
 
         state.Estado = request.Status;
-        if (request.Status == "received" && state.FechaEntrega is null) state.FechaEntrega = DateTime.UtcNow;
-        if (request.Status == "seen") state.FechaVista = DateTime.UtcNow;
+        if (request.Status == "received" && state.FechaEntrega is null) 
+            state.FechaEntrega = DateTime.UtcNow;
+        if (request.Status == "seen") 
+            state.FechaVista = DateTime.UtcNow;
 
         await _db.SaveChangesAsync();
         return Ok(new { success = true });
@@ -177,22 +249,37 @@ public class MessagesController : ControllerBase
     [HttpPatch("chats/{chatId:long}/read")]
     public async Task<IActionResult> MarkChatAsRead(long chatId, [FromQuery] long userId)
     {
+        // ✅ OPTIMIZACIÓN: Filtrar en BD, no en memoria
         var unreadStates = await _db.MensajeEstados
-            .Include(e => e.Mensaje)
-            .Where(e => e.Mensaje.ChatId == chatId && e.UsuarioId == userId && e.Estado != "seen")
+            .Where(e => 
+                e.Mensaje.ChatId == chatId && 
+                e.UsuarioId == userId && 
+                e.Estado != "seen")
             .ToListAsync();
 
-        if (!unreadStates.Any()) return Ok(new { message = "Sin mensajes pendientes" });
+        if (!unreadStates.Any()) 
+            return Ok(new { message = "Sin mensajes pendientes" });
 
+        var now = DateTime.UtcNow;
         foreach (var state in unreadStates)
         {
             state.Estado = "seen";
-            state.FechaVista = DateTime.UtcNow;
+            state.FechaVista = now;
         }
 
         await _db.SaveChangesAsync();
 
-        await _hubContext.Clients.Group(chatId.ToString()).SendAsync("ChatReadByPeer", userId);
+        // ✅ Fire-and-forget SignalR
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await _hubContext.Clients
+                    .Group(chatId.ToString())
+                    .SendAsync("ChatReadByPeer", userId);
+            }
+            catch { }
+        });
 
         return Ok(new { success = true, count = unreadStates.Count });
     }
@@ -224,26 +311,37 @@ public class MessagesController : ControllerBase
 
             await _db.SaveChangesAsync();
 
-            var mensaje = await _db.Mensajes
+            // ✅ OPTIMIZACIÓN: Solo traer RemitenteUsuarioId
+            var remitenteId = await _db.Mensajes
                 .AsNoTracking()
-                .FirstOrDefaultAsync(m => m.MensajeId == messageId);
+                .Where(m => m.MensajeId == messageId)
+                .Select(m => m.RemitenteUsuarioId)
+                .FirstOrDefaultAsync();
 
-            if (mensaje != null)
+            if (remitenteId > 0)
             {
-                await _hubContext.Clients.User(mensaje.RemitenteUsuarioId.ToString())
-                    .SendAsync("MessageDelivered", new
+                // ✅ Fire-and-forget SignalR
+                _ = Task.Run(async () =>
+                {
+                    try
                     {
-                        messageId,
-                        userId = request.UserId,
-                        timestamp = DateTime.UtcNow
-                    });
+                        await _hubContext.Clients.User(remitenteId.ToString())
+                            .SendAsync("MessageDelivered", new
+                            {
+                                messageId,
+                                userId = request.UserId,
+                                timestamp = DateTime.UtcNow
+                            });
+                    }
+                    catch { }
+                });
             }
 
             return Ok(new { success = true });
         }
         catch (Exception ex)
         {
-            return StatusCode(500, new { error = ex.Message, details = ex.InnerException?.Message });
+            return StatusCode(500, new { error = ex.Message });
         }
     }
 
@@ -252,55 +350,63 @@ public class MessagesController : ControllerBase
     {
         try
         {
-            // Buscar el estado existente DIRECTAMENTE en DbSet
             var estado = await _db.MensajeEstados
                 .FirstOrDefaultAsync(e => e.MensajeId == messageId && e.UsuarioId == request.UserId);
             
+            var now = DateTime.UtcNow;
+            
             if (estado == null)
             {
-                // Solo crear si NO existe
                 estado = new MensajeEstado
                 {
                     MensajeId = messageId,
                     UsuarioId = request.UserId,
                     Estado = "seen",
-                    FechaEntrega = DateTime.UtcNow,
-                    FechaVista = DateTime.UtcNow
+                    FechaEntrega = now,
+                    FechaVista = now
                 };
                 _db.MensajeEstados.Add(estado);
             }
             else
             {
-                // Si existe, solo actualizar
                 estado.Estado = "seen";
-                estado.FechaVista = DateTime.UtcNow;
-                if (estado.FechaEntrega == null)
-                    estado.FechaEntrega = DateTime.UtcNow;
+                estado.FechaVista = now;
+                estado.FechaEntrega ??= now;
             }
 
             await _db.SaveChangesAsync();
 
-            // Buscar el mensaje para notificar al remitente
-            var mensaje = await _db.Mensajes
+            // ✅ OPTIMIZACIÓN: Solo traer RemitenteUsuarioId
+            var remitenteId = await _db.Mensajes
                 .AsNoTracking()
-                .FirstOrDefaultAsync(m => m.MensajeId == messageId);
+                .Where(m => m.MensajeId == messageId)
+                .Select(m => m.RemitenteUsuarioId)
+                .FirstOrDefaultAsync();
 
-            if (mensaje != null)
+            if (remitenteId > 0)
             {
-                await _hubContext.Clients.User(mensaje.RemitenteUsuarioId.ToString())
-                    .SendAsync("MessageRead", new
+                // ✅ Fire-and-forget SignalR
+                _ = Task.Run(async () =>
+                {
+                    try
                     {
-                        messageId,
-                        userId = request.UserId,
-                        timestamp = DateTime.UtcNow
-                    });
+                        await _hubContext.Clients.User(remitenteId.ToString())
+                            .SendAsync("MessageRead", new
+                            {
+                                messageId,
+                                userId = request.UserId,
+                                timestamp = now
+                            });
+                    }
+                    catch { }
+                });
             }
 
             return Ok(new { success = true });
         }
         catch (Exception ex)
         {
-            return StatusCode(500, new { error = ex.Message, details = ex.InnerException?.Message });
+            return StatusCode(500, new { error = ex.Message });
         }
     }
 }
