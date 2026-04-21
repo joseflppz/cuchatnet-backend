@@ -20,44 +20,48 @@ public class AdminMessagesController : ControllerBase
     public async Task<ActionResult<IEnumerable<AdminMessageDto>>> GetMessages()
     {
         var messages = await _db.Mensajes
-            .Include(m => m.RemitenteUsuario)
-            .Include(m => m.Chat)
-            .ThenInclude(c => c.Participantes)
-            .ThenInclude(p => p.Usuario)
-            .Include(m => m.Estados)
             .OrderByDescending(m => m.FechaEnvio)
             .Take(200)
-            .ToListAsync();
-
-        var result = messages.Select(m =>
-        {
-            string destination;
-            if (m.Chat.TipoChat == "group")
+            .Select(m => new
             {
-                destination = m.Chat.Nombre ?? "Grupo";
-            }
-            else
-            {
-                destination = m.Chat.Participantes
-                    .FirstOrDefault(p => p.UsuarioId != m.RemitenteUsuarioId)?.Usuario?.Nombre ?? "Contacto";
-            }
-
-            var firstState = m.Estados.OrderByDescending(e => e.FechaVista ?? e.FechaEntrega).FirstOrDefault();
-            return new AdminMessageDto(
                 m.MensajeId,
-                m.RemitenteUsuario.Nombre,
+                RemitenteNombre = m.RemitenteUsuario.Nombre,
                 m.Chat.TipoChat,
-                destination,
+                ChatNombre = m.Chat.Nombre,
                 m.Chat.CodigoConversacion,
                 m.FechaEnvio,
-                firstState?.Estado == "seen" ? "Visto" : "Entregado",
                 m.Encriptado,
-                null,
                 m.IpOrigen,
-                firstState?.FechaEntrega,
-                firstState?.FechaVista
-            );
-        });
+                m.RemitenteUsuarioId,
+                // Obtener el destinatario solo si es chat privado
+                DestinatarioNombre = m.Chat.TipoChat == "private" 
+                    ? m.Chat.Participantes
+                        .Where(p => p.UsuarioId != m.RemitenteUsuarioId)
+                        .Select(p => p.Usuario.Nombre)
+                        .FirstOrDefault()
+                    : null,
+                // Obtener el primer estado
+                PrimerEstado = m.Estados
+                    .OrderByDescending(e => e.FechaVista ?? e.FechaEntrega)
+                    .Select(e => new { e.Estado, e.FechaEntrega, e.FechaVista })
+                    .FirstOrDefault()
+            })
+            .ToListAsync();
+
+        var result = messages.Select(m => new AdminMessageDto(
+            m.MensajeId,
+            m.RemitenteNombre,
+            m.TipoChat ?? "private",
+            m.TipoChat == "group" ? (m.ChatNombre ?? "Grupo") : (m.DestinatarioNombre ?? "Contacto"),
+            m.CodigoConversacion ?? "",
+            m.FechaEnvio,
+            m.PrimerEstado?.Estado == "seen" ? "Visto" : "Entregado",
+            m.Encriptado,
+            null,
+            m.IpOrigen,
+            m.PrimerEstado?.FechaEntrega,
+            m.PrimerEstado?.FechaVista
+        ));
 
         return Ok(result);
     }
