@@ -65,4 +65,33 @@ public class AdminMessagesController : ControllerBase
 
         return Ok(result);
     }
+
+    [HttpDelete("{messageId:long}")]
+    public async Task<IActionResult> DeleteMessage(long messageId)
+    {
+        var message = await _db.Mensajes.FindAsync(messageId);
+        
+        if (message is null)
+            return NotFound();
+
+        // Eliminar estados del mensaje
+        var estados = await _db.MensajeEstados
+            .Where(e => e.MensajeId == messageId)
+            .ToListAsync();
+        if (estados.Any())
+            _db.MensajeEstados.RemoveRange(estados);
+
+        // Eliminar adjuntos del mensaje
+        var adjuntos = await _db.MensajeAdjuntos
+            .Where(a => a.MensajeId == messageId)
+            .ToListAsync();
+        if (adjuntos.Any())
+            _db.MensajeAdjuntos.RemoveRange(adjuntos);
+
+        // Eliminar mensaje
+        _db.Mensajes.Remove(message);
+        
+        await _db.SaveChangesAsync();
+        return Ok(new { success = true });
+    }
 }
