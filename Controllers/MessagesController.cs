@@ -198,14 +198,8 @@ public class MessagesController : ControllerBase
     {
         try
         {
-            var mensaje = await _db.Mensajes
-                .Include(m => m.Estados)
-                .FirstOrDefaultAsync(m => m.MensajeId == messageId);
-
-            if (mensaje == null)
-                return NotFound(new { error = "Mensaje no encontrado" });
-
-            var estado = mensaje.Estados.FirstOrDefault(e => e.UsuarioId == request.UserId);
+            var estado = await _db.MensajeEstados
+                .FirstOrDefaultAsync(e => e.MensajeId == messageId && e.UsuarioId == request.UserId);
             
             if (estado == null)
             {
@@ -226,13 +220,20 @@ public class MessagesController : ControllerBase
 
             await _db.SaveChangesAsync();
 
-            await _hubContext.Clients.User(mensaje.RemitenteUsuarioId.ToString())
-                .SendAsync("MessageDelivered", new
-                {
-                    messageId,
-                    userId = request.UserId,
-                    timestamp = DateTime.UtcNow
-                });
+            var mensaje = await _db.Mensajes
+                .AsNoTracking()
+                .FirstOrDefaultAsync(m => m.MensajeId == messageId);
+
+            if (mensaje != null)
+            {
+                await _hubContext.Clients.User(mensaje.RemitenteUsuarioId.ToString())
+                    .SendAsync("MessageDelivered", new
+                    {
+                        messageId,
+                        userId = request.UserId,
+                        timestamp = DateTime.UtcNow
+                    });
+            }
 
             return Ok(new { success = true });
         }
@@ -247,17 +248,13 @@ public class MessagesController : ControllerBase
     {
         try
         {
-            var mensaje = await _db.Mensajes
-                .Include(m => m.Estados)
-                .FirstOrDefaultAsync(m => m.MensajeId == messageId);
-
-            if (mensaje == null)
-                return NotFound(new { error = "Mensaje no encontrado" });
-
-            var estado = mensaje.Estados.FirstOrDefault(e => e.UsuarioId == request.UserId);
+            // ✅ Buscar el estado existente DIRECTAMENTE en DbSet
+            var estado = await _db.MensajeEstados
+                .FirstOrDefaultAsync(e => e.MensajeId == messageId && e.UsuarioId == request.UserId);
             
             if (estado == null)
             {
+                // Solo crear si NO existe
                 estado = new MensajeEstado
                 {
                     MensajeId = messageId,
@@ -270,6 +267,7 @@ public class MessagesController : ControllerBase
             }
             else
             {
+                // Si existe, solo actualizar
                 estado.Estado = "seen";
                 estado.FechaVista = DateTime.UtcNow;
                 if (estado.FechaEntrega == null)
@@ -278,13 +276,21 @@ public class MessagesController : ControllerBase
 
             await _db.SaveChangesAsync();
 
-            await _hubContext.Clients.User(mensaje.RemitenteUsuarioId.ToString())
-                .SendAsync("MessageRead", new
-                {
-                    messageId,
-                    userId = request.UserId,
-                    timestamp = DateTime.UtcNow
-                });
+            // Buscar el mensaje para notificar al remitente
+            var mensaje = await _db.Mensajes
+                .AsNoTracking()
+                .FirstOrDefaultAsync(m => m.MensajeId == messageId);
+
+            if (mensaje != null)
+            {
+                await _hubContext.Clients.User(mensaje.RemitenteUsuarioId.ToString())
+                    .SendAsync("MessageRead", new
+                    {
+                        messageId,
+                        userId = request.UserId,
+                        timestamp = DateTime.UtcNow
+                    });
+            }
 
             return Ok(new { success = true });
         }
