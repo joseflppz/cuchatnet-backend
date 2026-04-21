@@ -67,21 +67,34 @@ public class AuthController : ControllerBase
             _db.CodigosVerificacion.Add(codigoVerificacion);
             await _db.SaveChangesAsync();
 
-            await SendEmailAsync(
-                email,
-                "Código de verificación - CUChatNet",
-                $@"
-                <div style='font-family: Arial, sans-serif; line-height: 1.6;'>
-                    <h2>Código de verificación</h2>
-                    <p>Tu código de acceso es:</p>
-                    <div style='font-size: 28px; font-weight: bold; letter-spacing: 4px; margin: 16px 0;'>
-                        {code}
-                    </div>
-                    <p>Este código vence en 5 minutos.</p>
-                    <p>Si no solicitaste este código, puedes ignorar este correo.</p>
-                </div>"
-            );
+            // ✅ FIRE-AND-FORGET: Enviar email en background (NO ESPERAR)
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await SendEmailAsync(
+                        email,
+                        "Código de verificación - CUChatNet",
+                        $@"
+                        <div style='font-family: Arial, sans-serif; line-height: 1.6;'>
+                            <h2>Código de verificación</h2>
+                            <p>Tu código de acceso es:</p>
+                            <div style='font-size: 28px; font-weight: bold; letter-spacing: 4px; margin: 16px 0;'>
+                                {code}
+                            </div>
+                            <p>Este código vence en 5 minutos.</p>
+                            <p>Si no solicitaste este código, puedes ignorar este correo.</p>
+                        </div>"
+                    );
+                }
+                catch (Exception ex)
+                {
+                    // ✅ Log error pero NO bloquear la respuesta
+                    Console.WriteLine($"❌ Error enviando email a {email}: {ex.Message}");
+                }
+            });
 
+            // ✅ RESPUESTA INMEDIATA (no esperar el email)
             return Ok(new VerifyResponse(
                 true,
                 "Código enviado correctamente al correo.",
