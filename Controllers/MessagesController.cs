@@ -99,9 +99,26 @@ public class MessagesController : ControllerBase
         };
 
         _db.Mensajes.Add(message);
+        
+        // Crear estados para todos los participantes (excepto el remitente)
+        var participantIds = chat.Participantes
+            .Where(p => p.Activo && p.UsuarioId != request.SenderId)
+            .Select(p => p.UsuarioId)
+            .ToList();
+
+        foreach (var participantId in participantIds)
+        {
+            _db.MensajeEstados.Add(new MensajeEstado
+            {
+                MensajeId = message.MensajeId,
+                UsuarioId = participantId,
+                Estado = "sent"
+            });
+        }
+        
         await _db.SaveChangesAsync();
 
-        // Notificar a los miembros del grupo por SignalR
+        // Preparar datos del mensaje para SignalR
         var messageData = new
         {
             id = message.MensajeId,
@@ -110,10 +127,12 @@ public class MessagesController : ControllerBase
             senderName = sender.Nombre,
             content = request.Content, // Enviamos texto plano para el tiempo real
             timestamp = message.FechaEnvio,
-            type = message.TipoMensaje
+            type = message.TipoMensaje,
+            status = "sent",
+            encrypted = true
         };
 
-        // El secreto de los grupos es que el Hub use el chatId como nombre de la sala (Group)
+        // Notificar a TODOS los participantes del chat (incluyendo el remitente)
         await _hubContext.Clients.Group(chatId.ToString()).SendAsync("ReceiveMessage", messageData);
 
         return Ok(messageData);
