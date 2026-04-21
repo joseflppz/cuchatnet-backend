@@ -33,8 +33,10 @@ public class AuthController : ControllerBase
 
             var email = NormalizeEmail(request.Email);
 
+            // ✅ OPTIMIZACIÓN: AsNoTracking + solo verificar existencia
             var existingUser = await _db.Usuarios
-                .FirstOrDefaultAsync(x =>
+                .AsNoTracking()
+                .AnyAsync(x =>
                     x.Email != null &&
                     x.Email.ToLower() == email &&
                     !x.Eliminado);
@@ -83,7 +85,7 @@ public class AuthController : ControllerBase
             return Ok(new VerifyResponse(
                 true,
                 "Código enviado correctamente al correo.",
-                existingUser is not null,
+                existingUser,
                 null,
                 null
             ));
@@ -137,7 +139,9 @@ public class AuthController : ControllerBase
             codigoGuardado.Usado = true;
             await _db.SaveChangesAsync();
 
+            // ✅ OPTIMIZACIÓN: AsSplitQuery para evitar cartesian explosion
             var user = await _db.Usuarios
+                .AsSplitQuery()
                 .Include(u => u.CuentaAcceso)
                 .Include(u => u.UsuarioRoles)
                     .ThenInclude(ur => ur.Rol)
@@ -239,7 +243,9 @@ public class AuthController : ControllerBase
                 fullPhone = parsed.FullPhone;
             }
 
+            // ✅ OPTIMIZACIÓN: AsSplitQuery
             var user = await _db.Usuarios
+                .AsSplitQuery()
                 .Include(u => u.CuentaAcceso)
                 .Include(u => u.UsuarioRoles)
                     .ThenInclude(ur => ur.Rol)
@@ -270,6 +276,7 @@ public class AuthController : ControllerBase
                 await _db.SaveChangesAsync();
 
                 var userRoleId = await _db.Roles
+                    .AsNoTracking()
                     .Where(x => x.Codigo == "USER" && x.Activo)
                     .Select(x => x.RolId)
                     .FirstOrDefaultAsync();
@@ -341,20 +348,21 @@ public class AuthController : ControllerBase
 
             await _db.SaveChangesAsync();
 
-             
-             _db.BitacoraEventos.Add(new BitacoraEvento
-             {
-                 Categoria = "system",
-                 UsuarioId = user.UsuarioId,
-                 Accion = "Perfil configurado",
-                 Detalles = $"Usuario: {request.Name} - Correo: {email}",
-                 Severidad = "info",
-                 DireccionIp = HttpContext.Connection.RemoteIpAddress?.ToString(),
-                 FechaEvento = DateTime.UtcNow,
-             });
-             await _db.SaveChangesAsync();
+            _db.BitacoraEventos.Add(new BitacoraEvento
+            {
+                Categoria = "system",
+                UsuarioId = user.UsuarioId,
+                Accion = "Perfil configurado",
+                Detalles = $"Usuario: {request.Name} - Correo: {email}",
+                Severidad = "info",
+                DireccionIp = HttpContext.Connection.RemoteIpAddress?.ToString(),
+                FechaEvento = DateTime.UtcNow,
+            });
+            await _db.SaveChangesAsync();
 
+            // ✅ OPTIMIZACIÓN: AsSplitQuery
             user = await _db.Usuarios
+                .AsSplitQuery()
                 .Include(u => u.UsuarioRoles)
                     .ThenInclude(ur => ur.Rol)
                 .FirstAsync(x => x.UsuarioId == user.UsuarioId);
@@ -404,7 +412,9 @@ public class AuthController : ControllerBase
 
             var email = NormalizeEmail(request.Email);
 
+            // ✅ OPTIMIZACIÓN: AsSplitQuery
             var user = await _db.Usuarios
+                .AsSplitQuery()
                 .Include(u => u.CuentaAcceso)
                 .Include(u => u.UsuarioRoles)
                     .ThenInclude(ur => ur.Rol)
@@ -428,10 +438,9 @@ public class AuthController : ControllerBase
             if (!passwordOk)
                 return Unauthorized(new { error = "Credenciales inválidas." });
 
-          
-             user.FechaUltimoAcceso = DateTime.UtcNow;
-             user.CuentaAcceso.UltimoLogin = DateTime.UtcNow;
-             await _db.SaveChangesAsync();
+            user.FechaUltimoAcceso = DateTime.UtcNow;
+            user.CuentaAcceso.UltimoLogin = DateTime.UtcNow;
+            await _db.SaveChangesAsync();
 
             var jwtKey = _configuration["Jwt:Key"]!;
             var jwtIssuer = _configuration["Jwt:Issuer"]!;
